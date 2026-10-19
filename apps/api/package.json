@@ -1,0 +1,19 @@
+{
+  "name": "@fixloop/api",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@fixloop/domain": "workspace:*",
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "@prisma/client": "6.19.3",
+    "fastify": "5.12.7",
+    "zod": "3.25.76",
+    "pino": "^9.0.0"
+  },
+  "devDependencies": { "vitest": "^3.2.0", "@types/node": "^22.0.0", "tsx": "4.20.6", "typescript": "5.9.3" }
+}

@@ -1,0 +1,323 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum MemberRole {
+  OWNER
+  MEMBER
+  VIEWER
+}
+enum DocumentType {
+  MANUAL
+  WARRANTY
+  RECEIPT
+  LEASE
+  OTHER
+}
+enum WorkflowStatus {
+  CREATED
+  TRIAGING
+  SAFETY_ESCALATED
+  READY_FOR_EVIDENCE
+  EVIDENCE_REVIEW
+  ACTION_PENDING
+  IN_PROGRESS
+  RESOLVED
+  CANCELED
+}
+enum RiskLevel {
+  LOW
+  MODERATE
+  HIGH
+  EMERGENCY
+  UNKNOWN
+}
+enum ActorType {
+  USER
+  SYSTEM
+  AGENT
+  TOOL
+  EXTERNAL
+}
+enum RepairStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  SENT
+  FAILED
+  CANCELED
+}
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  EXPIRED
+  CONSUMED
+}
+enum ExecStatus {
+  PENDING
+  RUNNING
+  SUCCEEDED
+  FAILED_RETRYABLE
+  FAILED_PERMANENT
+  UNKNOWN_OUTCOME
+}
+enum VerificationStatus {
+  VERIFIED
+  PARTIALLY_SUPPORTED
+  UNVERIFIED
+  CONFLICTING
+  NOT_FOUND
+}
+
+model User {
+  id                String   @id @default(uuid())
+  email             String   @unique
+  displayName       String
+  preferredLanguage String   @default("en")
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  memberships       HouseholdMember[]
+}
+
+model Household {
+  id          String   @id @default(uuid())
+  ownerUserId String
+  name        String
+  timezone    String   @default("America/Los_Angeles")
+  createdAt   DateTime @default(now())
+  members     HouseholdMember[]
+  appliances  Appliance[]
+  incidents   Incident[]
+  documents   ApplianceDocument[]
+}
+
+model HouseholdMember {
+  id          String     @id @default(uuid())
+  householdId String
+  userId      String
+  role        MemberRole
+  createdAt   DateTime   @default(now())
+  household   Household  @relation(fields: [householdId], references: [id], onDelete: Restrict)
+  user        User       @relation(fields: [userId], references: [id], onDelete: Restrict)
+  @@unique([householdId, userId])
+}
+
+model Appliance {
+  id               String   @id @default(uuid())
+  householdId      String
+  category         String
+  brand            String
+  modelNumber      String
+  serialNumber     String?
+  location         String?
+  purchaseDate     DateTime?
+  installationDate DateTime?
+  notes            String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  household        Household @relation(fields: [householdId], references: [id], onDelete: Restrict)
+  documents        ApplianceDocument[]
+  incidents        Incident[]
+  @@index([householdId])
+}
+
+model ApplianceDocument {
+  id               String       @id @default(uuid())
+  householdId      String
+  applianceId      String?
+  type             DocumentType
+  originalFilename String
+  contentType      String
+  sha256           String
+  storagePath      String
+  sourceType       String       @default("SYNTHETIC_FIXTURE")
+  uploadedAt       DateTime     @default(now())
+  extractedAt      DateTime?
+  processingStatus String       @default("PENDING")
+  extractionError  String?
+  version          Int          @default(1)
+  household        Household    @relation(fields: [householdId], references: [id], onDelete: Restrict)
+  appliance        Appliance?   @relation(fields: [applianceId], references: [id], onDelete: Restrict)
+  chunks           DocumentChunk[]
+  @@unique([householdId, sha256])
+  @@index([applianceId])
+}
+
+model DocumentChunk {
+  id          String @id @default(uuid())
+  documentId  String
+  pageNumber  Int
+  chunkIndex  Int
+  content     String
+  contentHash String
+  document    ApplianceDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  @@unique([documentId, pageNumber, chunkIndex])
+}
+
+model Incident {
+  id              String         @id @default(uuid())
+  householdId     String
+  applianceId     String?
+  title           String
+  description     String
+  category        String         @default("APPLIANCE")
+  severity        RiskLevel      @default(UNKNOWN)
+  safetyStatus    String         @default("NOT_ASSESSED")
+  workflowStatus  WorkflowStatus @default(CREATED)
+  createdByUserId String
+  openedAt        DateTime       @default(now())
+  resolvedAt      DateTime?
+  lastActivityAt  DateTime       @default(now())
+  version         Int            @default(1)
+  summary         String?
+  household       Household      @relation(fields: [householdId], references: [id], onDelete: Restrict)
+  appliance       Appliance?     @relation(fields: [applianceId], references: [id], onDelete: Restrict)
+  events          IncidentEvent[]
+  safetyAssessments SafetyAssessment[]
+  evidence        EvidenceReference[]
+  repairRequests  RepairRequest[]
+  approvals       Approval[]
+  @@index([householdId, workflowStatus, lastActivityAt])
+}
+
+model IncidentEvent {
+  id               String    @id @default(uuid())
+  incidentId       String
+  actorType        ActorType
+  actorId          String?
+  eventType        String
+  structuredPayload Json     @default("{}")
+  timestamp        DateTime  @default(now())
+  correlationId    String
+  idempotencyKey   String?
+  incident         Incident  @relation(fields: [incidentId], references: [id], onDelete: Restrict)
+  @@unique([incidentId, idempotencyKey])
+  @@index([incidentId, timestamp])
+}
+
+model SafetyAssessment {
+  id                 String    @id @default(uuid())
+  incidentId         String
+  identifiedHazards  Json
+  answers            Json
+  riskLevel          RiskLevel
+  escalationRequired Boolean
+  ruleVersion        String
+  completedAt        DateTime  @default(now())
+  incident           Incident  @relation(fields: [incidentId], references: [id], onDelete: Restrict)
+  @@index([incidentId])
+}
+
+model EvidenceReference {
+  id                 String             @id @default(uuid())
+  incidentId         String
+  documentId         String
+  chunkId            String
+  pageNumber         Int
+  quotedSnippet      String
+  claim              String
+  verificationStatus VerificationStatus
+  createdAt          DateTime           @default(now())
+  incident           Incident           @relation(fields: [incidentId], references: [id], onDelete: Restrict)
+  @@index([incidentId])
+}
+
+model RepairRequest {
+  id                String       @id @default(uuid())
+  incidentId        String
+  recipientType     String
+  recipientAddress  String?
+  subject           String
+  body              String
+  status            RepairStatus @default(DRAFT)
+  externalProvider  String       @default("SIMULATED_PROVIDER")
+  externalReference String?
+  idempotencyKey    String       @unique
+  createdAt         DateTime     @default(now())
+  sentAt            DateTime?
+  incident          Incident     @relation(fields: [incidentId], references: [id], onDelete: Restrict)
+}
+
+model Approval {
+  id                String         @id @default(uuid())
+  incidentId        String
+  actionType        String
+  actionPayloadHash String
+  actionRefId       String
+  requestedBy       String
+  approvedBy        String?
+  status            ApprovalStatus @default(PENDING)
+  expiresAt         DateTime
+  createdAt         DateTime       @default(now())
+  decidedAt         DateTime?
+  consumedAt        DateTime?
+  incident          Incident       @relation(fields: [incidentId], references: [id], onDelete: Restrict)
+  @@index([incidentId])
+}
+
+model ConversationSession {
+  id            String   @id @default(uuid())
+  userId        String
+  householdId   String
+  incidentId    String?
+  startedAt     DateTime @default(now())
+  endedAt       DateTime?
+  compactSummary String?
+  lastMessageAt DateTime @default(now())
+  messages      ConversationMessage[]
+}
+
+model ConversationMessage {
+  id         String   @id @default(uuid())
+  sessionId  String
+  role       String
+  content    String
+  timestamp  DateTime @default(now())
+  toolCallId String?
+  incidentId String?
+  session    ConversationSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  @@index([sessionId, timestamp])
+}
+
+model ToolExecution {
+  id             String     @id @default(uuid())
+  toolName       String
+  actorId        String
+  incidentId     String?
+  requestHash    String
+  idempotencyKey String
+  status         ExecStatus @default(PENDING)
+  startedAt      DateTime   @default(now())
+  completedAt    DateTime?
+  errorCode      String?
+  resultSummary  Json?
+  @@unique([toolName, actorId, idempotencyKey])
+}
+
+model OutboxEvent {
+  id            String   @id @default(uuid())
+  aggregateId   String
+  eventType     String
+  payload       Json
+  status        String   @default("PENDING")
+  attempts      Int      @default(0)
+  nextAttemptAt DateTime @default(now())
+  createdAt     DateTime @default(now())
+  processedAt   DateTime?
+}
+
+// Stand-in for the external recipient system (simulated provider).
+model ProviderRequest {
+  id             String   @id @default(uuid())
+  idempotencyKey String   @unique
+  reference      String   @unique
+  subject        String
+  body           String
+  receivedAt     DateTime @default(now())
+}

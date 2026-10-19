@@ -1,0 +1,25 @@
+{
+  "name": "fixloop",
+  "private": true,
+  "version": "0.1.0",
+  "license": "MIT",
+  "packageManager": "pnpm@12.14.0",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "db:start": "node scripts/dev-db.mjs",
+    "db:migrate": "prisma migrate deploy",
+    "db:seed": "pnpm --filter @fixloop/api exec tsx ../../prisma/seed.ts",
+    "dev": "pnpm --filter @fixloop/api dev",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "verify": "pnpm typecheck && pnpm test"
+  },
+  "devDependencies": {
+    "prisma": "6.19.3",
+    "@prisma/client": "6.19.3",
+    "embedded-postgres": "17.10.0-beta.17",
+    "typescript": "5.9.3",
+    "tsx": "4.20.6"
+  },
+  "prisma": { "schema": "prisma/schema.prisma" }
+}

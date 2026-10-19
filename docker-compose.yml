@@ -1,0 +1,7 @@
+services:
+  db:
+    image: postgres:17
+    environment: { POSTGRES_USER: fixloop, POSTGRES_PASSWORD: fixloop, POSTGRES_DB: fixloop }
+    ports: ["54329:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+volumes: { pgdata: {} }

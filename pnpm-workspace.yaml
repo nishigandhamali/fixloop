@@ -1,0 +1,9 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+allowBuilds:
+  "@embedded-postgres/darwin-arm64": true
+  "@prisma/client": true
+  "@prisma/engines": true
+  esbuild: true
+  prisma: true
