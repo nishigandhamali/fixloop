@@ -18,7 +18,7 @@ export class IncidentService {
   }
   private requireWriter(p: Principal) { if (p.role === "VIEWER") throw forbidden(); }
 
-  private async event(tx: Tx, p: Principal, incidentId: string, eventType: string, payload: object, actorType: "USER" | "SYSTEM" | "AGENT" | "TOOL" | "EXTERNAL" = "TOOL", idempotencyKey?: string) {
+  async event(tx: Tx, p: Principal, incidentId: string, eventType: string, payload: object, actorType: "USER" | "SYSTEM" | "AGENT" | "TOOL" | "EXTERNAL" = "TOOL", idempotencyKey?: string) {
     return tx.incidentEvent.create({ data: { incidentId, actorType, actorId: p.userId, eventType, structuredPayload: payload as Prisma.InputJsonValue, correlationId: p.correlationId, idempotencyKey } });
   }
 
@@ -62,12 +62,13 @@ export class IncidentService {
 
   async get(p: Principal, incidentId: string) {
     const inc = await this.load(this.db, p, incidentId);
-    const [events, approvals, appliance] = await Promise.all([
+    const [events, approvals, appliance, repairRequests] = await Promise.all([
       this.db.incidentEvent.findMany({ where: { incidentId }, orderBy: { timestamp: "desc" }, take: 10 }),
       this.db.approval.findMany({ where: { incidentId, status: "PENDING" } }),
       inc.applianceId ? this.db.appliance.findUnique({ where: { id: inc.applianceId } }) : null,
+      this.db.repairRequest.findMany({ where: { incidentId }, orderBy: { createdAt: "asc" } }),
     ]);
-    return { incident: inc, appliance, recentEvents: events.reverse(), pendingApprovals: approvals };
+    return { incident: inc, appliance, recentEvents: events.reverse(), pendingApprovals: approvals, repairRequests };
   }
 
   async listActive(p: Principal, applianceId?: string) {

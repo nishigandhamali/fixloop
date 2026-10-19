@@ -3,9 +3,12 @@ import { z } from "zod";
 import { AppError } from "../errors.js";
 import type { Principal } from "../principal.js";
 import type { IncidentService } from "../modules/incidents/incident-service.js";
+import type { RepairService } from "../modules/repair/repair-service.js";
+import { RECIPIENT_TYPES } from "../modules/repair/repair-service.js";
+import type { ExecutionService } from "../modules/repair/execution-service.js";
 import type { EvidenceService } from "../modules/documents/evidence-service.js";
 
-export interface McpServices { incidents: IncidentService; evidence: EvidenceService }
+export interface McpServices { incidents: IncidentService; evidence: EvidenceService; repair: RepairService; exec: ExecutionService }
 
 const answersShape = z.object({
   nearElectricalOutlet: z.boolean().optional(),
@@ -127,6 +130,35 @@ export function buildMcpServer(services: McpServices, p: Principal): McpServer {
   }, guard(async ({ incidentId, question, applianceId }) => {
     const r = await services.evidence.findForIncident(p, { incidentId, question, applianceId });
     return ok(json(r), `${r.overallStatus}: ${r.evidence.length} cited passage(s) from ${r.searchedDocuments} document(s)`);
+  }));
+
+  const idem = z.string().min(8).max(128);
+
+  server.registerTool("draft_repair_request", {
+    title: "Draft repair request",
+    description: "Prepare (but never send) a repair request for the incident. Refused for unassessed or hazardous incidents. Only VERIFIED, model-matched document facts are quoted, with page citations. Idempotent: an identical draft is returned, not duplicated.",
+    inputSchema: { incidentId: z.string().uuid(), recipientType: z.enum(RECIPIENT_TYPES), messageContext: z.string().max(1000).optional() }, annotations: write,
+  }, guard(async ({ incidentId, recipientType, messageContext }) => {
+    const { draft, replayed } = await services.repair.draft(p, { incidentId, recipientType, messageContext });
+    return ok({ draftId: draft.id, subject: draft.subject, body: draft.body, status: draft.status, replayed, sent: false }, "Draft prepared. Nothing has been sent.");
+  }));
+
+  server.registerTool("request_action_approval", {
+    title: "Request action approval",
+    description: "Ask the HUMAN user to approve submitting a draft. Creates a pending approval bound to the exact draft text (hash). You cannot approve it yourself; the user decides in their own session.",
+    inputSchema: { incidentId: z.string().uuid(), actionType: z.literal("SUBMIT_REPAIR_REQUEST"), draftId: z.string().uuid() }, annotations: write,
+  }, guard(async ({ incidentId, actionType, draftId }) => {
+    const { approval, replayed } = await services.repair.requestApproval(p, { incidentId, actionType, draftId });
+    return ok({ approvalId: approval.id, actionSummary: "Submit the drafted repair request to the (simulated) provider", payloadHash: approval.actionPayloadHash, expiresAt: approval.expiresAt.toISOString(), status: approval.status, replayed }, "Waiting for the user to approve.");
+  }));
+
+  server.registerTool("execute_approved_action", {
+    title: "Execute approved action",
+    description: "Submit an action the user has already approved. Fails unless the approval is APPROVED, unexpired, unconsumed, and the draft is unchanged. Side-effecting; reuse the same idempotencyKey to retry safely. Returns a durable status (SUCCEEDED, FAILED_RETRYABLE, FAILED_PERMANENT, UNKNOWN_OUTCOME); report it faithfully and never claim success otherwise. Submission goes to a SIMULATED provider: no real technician is contacted.",
+    inputSchema: { incidentId: z.string().uuid(), approvalId: z.string().uuid(), idempotencyKey: idem }, annotations: { ...write, openWorldHint: true },
+  }, guard(async (a) => {
+    const r = await services.exec.execute(p, a);
+    return ok({ ...r } as Record<string, unknown>, r.message);
   }));
 
   return server;

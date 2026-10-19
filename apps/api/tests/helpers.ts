@@ -6,6 +6,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildApp } from "../src/app.js";
+import { SimulatedRepairProvider } from "../src/adapters/provider.js";
 import { LocalFsStorage } from "../src/adapters/storage.js";
 import { issueToken } from "../src/auth.js";
 import { seed, SEED_IDS } from "../../../prisma/seed.js";
@@ -24,12 +25,13 @@ export async function startApp(opts: StartOptions = {}) {
   }
   const storageDir = opts.storageDir ?? mkdtempSync(join(tmpdir(), "fixloop-test-"));
   const storage = new LocalFsStorage(storageDir);
-  const app: FastifyInstance = buildApp(db, { sessionSecret: SECRET, demoMode: true, allowedOrigins: ["http://localhost:3000"], storage, maxUploadBytes: opts.maxUploadBytes ?? 2_000_000, now: () => FIXED_NOW });
+  const provider = new SimulatedRepairProvider(db);
+  const app: FastifyInstance = buildApp(db, { provider, retry: { maxAttempts: 3, baseMs: 1, capMs: 2, leaseMs: 30_000 }, sessionSecret: SECRET, demoMode: true, allowedOrigins: ["http://localhost:3000"], storage, maxUploadBytes: opts.maxUploadBytes ?? 2_000_000, now: () => FIXED_NOW });
   const url = await app.listen({ port: 0, host: "127.0.0.1" });
-  return { app, db, url, storage, storageDir, close: async () => { await app.close(); await db.$disconnect(); } };
+  return { app, db, url, storage, provider, storageDir, close: async () => { await app.close(); await db.$disconnect(); } };
 }
 
-export const tokenFor = (userId: string, householdId: string) => issueToken(SECRET, userId, householdId);
+export const tokenFor = (userId: string, householdId: string, scope: "user" | "agent" = "agent") => issueToken(SECRET, userId, householdId, scope);
 
 export async function mcpClient(baseUrl: string, token: string) {
   const client = new Client({ name: "fixloop-test", version: "0.0.0" });

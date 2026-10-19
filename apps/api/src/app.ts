@@ -4,15 +4,18 @@ import { z } from "zod";
 import { randomUUID } from "node:crypto";
 import type { Db } from "./db.js";
 import { AppError } from "./errors.js";
-import { issueToken, verifyToken } from "./auth.js";
+import { issueToken, verifyToken, type TokenScope } from "./auth.js";
 import type { Principal } from "./principal.js";
 import { IncidentService } from "./modules/incidents/incident-service.js";
 import { buildMcpServer } from "./mcp/server.js";
 import { DocumentService } from "./modules/documents/document-service.js";
 import { EvidenceService } from "./modules/documents/evidence-service.js";
 import type { BlobStorage } from "./adapters/storage.js";
+import { SimulatedRepairProvider, type Fault } from "./adapters/provider.js";
+import { RepairService } from "./modules/repair/repair-service.js";
+import { ExecutionService, DEFAULT_RETRY, type RetryConfig } from "./modules/repair/execution-service.js";
 
-export interface AppConfig { sessionSecret: string; demoMode: boolean; allowedOrigins: string[]; storage: BlobStorage; maxUploadBytes: number; now?: () => Date }
+export interface AppConfig { sessionSecret: string; demoMode: boolean; allowedOrigins: string[]; storage: BlobStorage; maxUploadBytes: number; now?: () => Date; provider?: SimulatedRepairProvider; retry?: RetryConfig }
 
 declare module "fastify" { interface FastifyRequest { principal?: Principal } }
 
@@ -21,6 +24,9 @@ export function buildApp(db: Db, cfg: AppConfig): FastifyInstance {
   const svc = new IncidentService(db);
   const docs = new DocumentService(db, cfg.storage, cfg.maxUploadBytes);
   const evidence = new EvidenceService(db, cfg.now);
+  const provider = cfg.provider ?? new SimulatedRepairProvider(db);
+  const repair = new RepairService(db, svc, evidence, cfg.now);
+  const exec = new ExecutionService(db, svc, provider, cfg.retry ?? DEFAULT_RETRY, cfg.now);
 
   // Uploads are raw bodies (application/pdf | text/plain) with metadata in the query string.
   for (const ct of ["application/pdf", "text/plain"]) app.addContentTypeParser(ct, { parseAs: "buffer", bodyLimit: cfg.maxUploadBytes }, (_req, body, done) => done(null, body));
@@ -44,9 +50,9 @@ export function buildApp(db: Db, cfg: AppConfig): FastifyInstance {
     if (req.method === "OPTIONS") return reply.status(204).send();
   });
 
-  const authenticate = async (req: import("fastify").FastifyRequest) => {
+  const authenticate = async (req: import("fastify").FastifyRequest, scopes?: TokenScope[]) => {
     const h = req.headers.authorization;
-    const p = await verifyToken(db, cfg.sessionSecret, h?.startsWith("Bearer ") ? h.slice(7) : undefined, req.id);
+    const p = await verifyToken(db, cfg.sessionSecret, h?.startsWith("Bearer ") ? h.slice(7) : undefined, req.id, scopes);
     if (!p) throw new AppError("UNAUTHENTICATED", "Authentication required", 401);
     req.principal = p;
     return p;
@@ -62,7 +68,7 @@ export function buildApp(db: Db, cfg: AppConfig): FastifyInstance {
     if (!cfg.demoMode) throw new AppError("DEMO_DISABLED", "Demo mode disabled", 404);
     const m = await db.householdMember.findFirst({ where: { household: { name: { startsWith: "Demo Household" } } } });
     if (!m) throw new AppError("NOT_SEEDED", "Run pnpm db:seed", 500);
-    return { token: issueToken(cfg.sessionSecret, m.userId, m.householdId), householdId: m.householdId };
+    return { token: issueToken(cfg.sessionSecret, m.userId, m.householdId, "user"), agentToken: issueToken(cfg.sessionSecret, m.userId, m.householdId, "agent"), householdId: m.householdId };
   });
   app.get("/api/v1/session", async (req) => { const p = await authenticate(req); return { userId: p.userId, householdId: p.householdId, role: p.role }; });
 
@@ -93,13 +99,33 @@ export function buildApp(db: Db, cfg: AppConfig): FastifyInstance {
   app.get("/api/v1/documents", async (req) => ({ documents: await docs.list(await authenticate(req), z.object({ applianceId: z.string().uuid().optional() }).parse(req.query).applianceId) }));
   app.get("/api/v1/documents/:id", async (req) => ({ document: await docs.get(await authenticate(req), z.object({ id: z.string().uuid() }).parse(req.params).id) }));
 
+  // --- approvals: human decisions require a scope:"user" credential; the MCP/agent credential is refused ---
+  const idParam = (req: { params: unknown }) => z.object({ id: z.string().uuid() }).parse(req.params).id;
+  app.get("/api/v1/approvals/:id", async (req) => repair.getApproval(await authenticate(req), idParam(req)));
+  app.post("/api/v1/approvals/:id/approve", async (req) => repair.decide(await authenticate(req, ["user"]), idParam(req), "APPROVED"));
+  app.post("/api/v1/approvals/:id/reject", async (req) => repair.decide(await authenticate(req, ["user"]), idParam(req), "REJECTED"));
+  app.post("/api/v1/incidents/:id/resolve", async (req) => {
+    const b = z.object({ resolutionSummary: z.string().min(1).max(2000), idempotencyKey: z.string().min(8).max(128) }).parse(req.body);
+    return svc.resolve(await authenticate(req, ["user"]), idParam(req), b.resolutionSummary, b.idempotencyKey);
+  });
+  app.post("/api/v1/incidents/:id/reopen", async (req) => svc.reopen(await authenticate(req, ["user"]), idParam(req), z.object({ reason: z.string().min(1).max(1000) }).parse(req.body).reason));
+
+  // Demo-only fault injection for the simulated provider (interrupted-submission scenario).
+  app.post("/api/v1/demo/provider-faults", async (req) => {
+    await authenticate(req, ["user"]);
+    if (!cfg.demoMode) throw new AppError("DEMO_DISABLED", "Demo mode disabled", 404);
+    const b = z.object({ faults: z.array(z.enum(["submit:fail_before", "submit:timeout_after", "submit:reject", "lookup:fail"])).max(10) }).parse(req.body);
+    provider.script(...(b.faults as Fault[]));
+    return { scripted: b.faults };
+  });
+
   // --- MCP Streamable HTTP (stateless: one server+transport per request, bound to the authenticated principal) ---
   app.route({ method: ["POST", "GET", "DELETE"], url: "/mcp", handler: async (req, reply) => {
-    const p = await authenticate(req);
+    const p = await authenticate(req, ["agent"]);
     if (req.method !== "POST") { // stateless mode: no server-initiated SSE stream or sessions
       return reply.status(405).header("allow", "POST").send({ jsonrpc: "2.0", error: { code: -32000, message: "Method not allowed (stateless server)" }, id: null });
     }
-    const server = buildMcpServer({ incidents: svc, evidence }, p);
+    const server = buildMcpServer({ incidents: svc, evidence, repair, exec }, p);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     reply.hijack();
     reply.raw.on("close", () => { void transport.close(); void server.close(); });
