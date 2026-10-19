@@ -8,21 +8,33 @@ import { issueToken, verifyToken } from "./auth.js";
 import type { Principal } from "./principal.js";
 import { IncidentService } from "./modules/incidents/incident-service.js";
 import { buildMcpServer } from "./mcp/server.js";
+import { DocumentService } from "./modules/documents/document-service.js";
+import { EvidenceService } from "./modules/documents/evidence-service.js";
+import type { BlobStorage } from "./adapters/storage.js";
 
-export interface AppConfig { sessionSecret: string; demoMode: boolean; allowedOrigins: string[] }
+export interface AppConfig { sessionSecret: string; demoMode: boolean; allowedOrigins: string[]; storage: BlobStorage; maxUploadBytes: number; now?: () => Date }
 
 declare module "fastify" { interface FastifyRequest { principal?: Principal } }
 
 export function buildApp(db: Db, cfg: AppConfig): FastifyInstance {
   const app = Fastify({ logger: process.env.NODE_ENV === "test" ? false : { redact: ["req.headers.authorization"] }, bodyLimit: 1_000_000, genReqId: () => randomUUID() });
   const svc = new IncidentService(db);
+  const docs = new DocumentService(db, cfg.storage, cfg.maxUploadBytes);
+  const evidence = new EvidenceService(db, cfg.now);
+
+  // Uploads are raw bodies (application/pdf | text/plain) with metadata in the query string.
+  for (const ct of ["application/pdf", "text/plain"]) app.addContentTypeParser(ct, { parseAs: "buffer", bodyLimit: cfg.maxUploadBytes }, (_req, body, done) => done(null, body));
 
   app.setErrorHandler((err: unknown, req, reply) => {
     const e = err as { validation?: unknown; statusCode?: number };
     if (err instanceof AppError) return reply.status(err.status).send({ error: { code: err.code, message: err.message, correlationId: req.id } });
     if (err instanceof z.ZodError) return reply.status(400).send({ error: { code: "VALIDATION_ERROR", message: err.issues.map((i) => i.message).join("; "), correlationId: req.id } });
+    const sc = e.statusCode;
+    if (sc === 413) return reply.status(413).send({ error: { code: "PAYLOAD_TOO_LARGE", message: "Request body too large", correlationId: req.id } });
+    if (sc === 415) return reply.status(415).send({ error: { code: "UNSUPPORTED_MEDIA_TYPE", message: "Unsupported content type", correlationId: req.id } });
+    if (sc && sc >= 400 && sc < 500) return reply.status(sc).send({ error: { code: "BAD_REQUEST", message: "Bad request", correlationId: req.id } });
     req.log.error({ err }, "unhandled");
-    return reply.status(e.statusCode && e.statusCode < 500 ? e.statusCode : 500).send({ error: { code: "INTERNAL_ERROR", message: "Unexpected error", correlationId: req.id } });
+    return reply.status(500).send({ error: { code: "INTERNAL_ERROR", message: "Unexpected error", correlationId: req.id } });
   });
 
   app.addHook("onRequest", async (req, reply) => {
@@ -71,13 +83,23 @@ export function buildApp(db: Db, cfg: AppConfig): FastifyInstance {
     return svc.timeline(p, id, q);
   });
 
+  app.post("/api/v1/documents", { bodyLimit: cfg.maxUploadBytes }, async (req, reply) => {
+    const p = await authenticate(req);
+    const q = z.object({ filename: z.string().min(1).max(200), type: z.enum(["MANUAL", "WARRANTY", "RECEIPT", "LEASE", "OTHER"]), applianceId: z.string().uuid().optional() }).parse(req.query);
+    if (!Buffer.isBuffer(req.body)) throw new AppError("UNSUPPORTED_MEDIA_TYPE", "Send the file as application/pdf or text/plain", 415);
+    const r = await docs.ingest(p, { filename: q.filename, type: q.type, applianceId: q.applianceId, contentType: req.headers["content-type"] ?? "", bytes: req.body });
+    return reply.status(r.duplicate ? 200 : 201).send({ document: r.document, duplicate: r.duplicate, chunkCount: r.chunkCount });
+  });
+  app.get("/api/v1/documents", async (req) => ({ documents: await docs.list(await authenticate(req), z.object({ applianceId: z.string().uuid().optional() }).parse(req.query).applianceId) }));
+  app.get("/api/v1/documents/:id", async (req) => ({ document: await docs.get(await authenticate(req), z.object({ id: z.string().uuid() }).parse(req.params).id) }));
+
   // --- MCP Streamable HTTP (stateless: one server+transport per request, bound to the authenticated principal) ---
   app.route({ method: ["POST", "GET", "DELETE"], url: "/mcp", handler: async (req, reply) => {
     const p = await authenticate(req);
     if (req.method !== "POST") { // stateless mode: no server-initiated SSE stream or sessions
       return reply.status(405).header("allow", "POST").send({ jsonrpc: "2.0", error: { code: -32000, message: "Method not allowed (stateless server)" }, id: null });
     }
-    const server = buildMcpServer(svc, p);
+    const server = buildMcpServer({ incidents: svc, evidence }, p);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     reply.hijack();
     reply.raw.on("close", () => { void transport.close(); void server.close(); });

@@ -142,6 +142,9 @@ model ApplianceDocument {
   processingStatus String       @default("PENDING")
   extractionError  String?
   version          Int          @default(1)
+  declaredModels   String[]     @default([])
+  declaredBrand    String?
+  expiresOn        DateTime?
   household        Household    @relation(fields: [householdId], references: [id], onDelete: Restrict)
   appliance        Appliance?   @relation(fields: [applianceId], references: [id], onDelete: Restrict)
   chunks           DocumentChunk[]
@@ -156,6 +159,8 @@ model DocumentChunk {
   chunkIndex  Int
   content     String
   contentHash String
+  /// GENERATED ALWAYS AS (to_tsvector('english', content)) STORED -- defined in migration SQL
+  search      Unsupported("tsvector")?
   document    ApplianceDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
   @@unique([documentId, pageNumber, chunkIndex])
 }
