@@ -62,13 +62,18 @@ export class IncidentService {
 
   async get(p: Principal, incidentId: string) {
     const inc = await this.load(this.db, p, incidentId);
-    const [events, approvals, appliance, repairRequests] = await Promise.all([
+    const [events, approvals, appliance, repairRequests, latestSafety] = await Promise.all([
       this.db.incidentEvent.findMany({ where: { incidentId }, orderBy: { timestamp: "desc" }, take: 10 }),
       this.db.approval.findMany({ where: { incidentId, status: { in: ["PENDING", "APPROVED"] } } }),
       inc.applianceId ? this.db.appliance.findUnique({ where: { id: inc.applianceId } }) : null,
       this.db.repairRequest.findMany({ where: { incidentId }, orderBy: { createdAt: "asc" } }),
+      this.db.safetyAssessment.findFirst({ where: { incidentId }, orderBy: { completedAt: "desc" } }),
     ]);
-    return { incident: inc, appliance, recentEvents: events.reverse(), pendingApprovals: approvals, repairRequests };
+    return { incident: inc, appliance, recentEvents: events.reverse(), pendingApprovals: approvals, repairRequests, latestSafety };
+  }
+
+  async listAll(p: Principal) {
+    return this.db.incident.findMany({ where: { householdId: p.householdId }, orderBy: { lastActivityAt: "desc" }, take: 100 });
   }
 
   async listActive(p: Principal, applianceId?: string) {

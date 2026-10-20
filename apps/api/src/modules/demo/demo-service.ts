@@ -6,7 +6,7 @@ import type { Principal } from "../../principal.js";
 import type { IncidentService } from "../incidents/incident-service.js";
 import type { RepairService } from "../repair/repair-service.js";
 import type { ExecutionService } from "../repair/execution-service.js";
-import { seed } from "../../../../../prisma/seed.js";
+import { seed, SEED_IDS } from "../../../../../prisma/seed.js";
 
 export const SCENARIOS = ["dishwasher_leak", "resume_incident", "wrong_model", "emergency", "interrupted_submission"] as const;
 export type Scenario = (typeof SCENARIOS)[number];
@@ -26,6 +26,8 @@ export class DemoService {
   private async wipe(p: Principal, withDocs: boolean) {
     await this.db.$executeRawUnsafe(`TRUNCATE "ConversationMessage","ConversationSession","IncidentEvent","SafetyAssessment","EvidenceReference","RepairRequest","Approval","Incident","ToolExecution","OutboxEvent","ProviderRequest" RESTART IDENTITY CASCADE`);
     if (withDocs) await this.db.$executeRawUnsafe(`TRUNCATE "DocumentChunk","ApplianceDocument" RESTART IDENTITY CASCADE`);
+    // user-added appliances go too (their documents/cases were just removed, so the FK restriction is satisfied)
+    if (withDocs) await this.db.appliance.deleteMany({ where: { householdId: p.householdId, id: { not: SEED_IDS.appliance } } });
     this.provider.clearFaults();
     await seed(this.db);
     return p;

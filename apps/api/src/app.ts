@@ -88,7 +88,16 @@ export function buildApp(db: Db, cfg: AppConfig): FastifyInstance {
 
   // --- REST surface (same services as MCP) ---
   app.get("/api/v1/appliances", async (req) => ({ appliances: await svc.listAppliances(await authenticate(req)) }));
-  app.get("/api/v1/incidents", async (req) => ({ incidents: await svc.listActive(await authenticate(req)) }));
+  app.get("/api/v1/incidents", async (req) => {
+    const p = await authenticate(req);
+    const all = z.object({ all: z.enum(["1", "true"]).optional() }).parse(req.query).all;
+    return { incidents: all ? await svc.listAll(p) : await svc.listActive(p) };
+  });
+  app.get("/api/v1/incidents/:id/evidence", async (req) => {
+    const p = await authenticate(req);
+    const q = z.object({ question: z.string().min(3).max(500) }).parse(req.query);
+    return evidence.findForIncident(p, { incidentId: idParam(req), question: q.question });
+  });
   app.post("/api/v1/incidents", async (req, reply) => {
     const p = await authenticate(req);
     const body = z.object({ applianceId: z.string().uuid().optional(), description: z.string().min(3).max(4000), idempotencyKey: z.string().min(8).max(128) }).parse(req.body);
