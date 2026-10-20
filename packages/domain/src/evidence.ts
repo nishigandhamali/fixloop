@@ -45,7 +45,7 @@ export function chunkPage(pageText: string): string[] {
 export const contentHash = (s: string) => createHash("sha256").update(s).digest("hex");
 
 // ---------- terms ----------
-const STOPWORDS = new Set("the a an is are was were my our your do does did how what when where why which can i it to of in on for and or if should there this that with about be been by at from as me we you any have has had not no so please tell will would could".split(" "));
+const STOPWORDS = new Set("the a an is are was were my our your do does did how what when where why which can i it to of in on for and or if should there this that with about be been by at from as me we you any have has had not no so please tell will would could know don t dont just really think need want".split(" "));
 
 export function stem(word: string): string {
   let w = word.toLowerCase();

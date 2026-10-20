@@ -20,7 +20,7 @@ export interface StartOptions { reset?: boolean; storageDir?: string; maxUploadB
 export async function startApp(opts: StartOptions = {}) {
   const db = new PrismaClient({ datasources: { db: { url: process.env.TEST_DATABASE_URL! } } });
   if (opts.reset !== false) {
-    await db.$executeRawUnsafe(`TRUNCATE "IncidentEvent","SafetyAssessment","EvidenceReference","RepairRequest","Approval","Incident","ToolExecution","OutboxEvent","ProviderRequest","DocumentChunk","ApplianceDocument" RESTART IDENTITY CASCADE`);
+    await db.$executeRawUnsafe(`TRUNCATE "ConversationMessage","ConversationSession","IncidentEvent","SafetyAssessment","EvidenceReference","RepairRequest","Approval","Incident","ToolExecution","OutboxEvent","ProviderRequest","DocumentChunk","ApplianceDocument" RESTART IDENTITY CASCADE`);
     await seed(db);
   }
   const storageDir = opts.storageDir ?? mkdtempSync(join(tmpdir(), "fixloop-test-"));

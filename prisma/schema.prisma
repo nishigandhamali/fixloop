@@ -274,6 +274,7 @@ model ConversationSession {
   startedAt     DateTime @default(now())
   endedAt       DateTime?
   compactSummary String?
+  state         Json     @default("{}")
   lastMessageAt DateTime @default(now())
   messages      ConversationMessage[]
 }

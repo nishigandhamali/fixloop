@@ -64,7 +64,7 @@ export class IncidentService {
     const inc = await this.load(this.db, p, incidentId);
     const [events, approvals, appliance, repairRequests] = await Promise.all([
       this.db.incidentEvent.findMany({ where: { incidentId }, orderBy: { timestamp: "desc" }, take: 10 }),
-      this.db.approval.findMany({ where: { incidentId, status: "PENDING" } }),
+      this.db.approval.findMany({ where: { incidentId, status: { in: ["PENDING", "APPROVED"] } } }),
       inc.applianceId ? this.db.appliance.findUnique({ where: { id: inc.applianceId } }) : null,
       this.db.repairRequest.findMany({ where: { incidentId }, orderBy: { createdAt: "asc" } }),
     ]);

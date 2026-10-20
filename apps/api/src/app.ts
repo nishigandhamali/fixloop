@@ -12,10 +12,14 @@ import { DocumentService } from "./modules/documents/document-service.js";
 import { EvidenceService } from "./modules/documents/evidence-service.js";
 import type { BlobStorage } from "./adapters/storage.js";
 import { SimulatedRepairProvider, type Fault } from "./adapters/provider.js";
+import { ConversationService } from "./modules/agent/conversation-service.js";
+import { McpToolGateway, type ToolGateway } from "./modules/agent/tools.js";
+import { FixtureLlmProvider, ResilientLlm, type LlmProvider } from "./modules/agent/llm.js";
+import { DemoService, SCENARIOS } from "./modules/demo/demo-service.js";
 import { RepairService } from "./modules/repair/repair-service.js";
 import { ExecutionService, DEFAULT_RETRY, type RetryConfig } from "./modules/repair/execution-service.js";
 
-export interface AppConfig { sessionSecret: string; demoMode: boolean; allowedOrigins: string[]; storage: BlobStorage; maxUploadBytes: number; now?: () => Date; provider?: SimulatedRepairProvider; retry?: RetryConfig }
+export interface AppConfig { sessionSecret: string; demoMode: boolean; allowedOrigins: string[]; storage: BlobStorage; maxUploadBytes: number; now?: () => Date; provider?: SimulatedRepairProvider; retry?: RetryConfig; llm?: LlmProvider; gatewayFor?: (p: Principal) => ToolGateway }
 
 declare module "fastify" { interface FastifyRequest { principal?: Principal } }
 
@@ -26,6 +30,15 @@ export function buildApp(db: Db, cfg: AppConfig): FastifyInstance {
   const evidence = new EvidenceService(db, cfg.now);
   const provider = cfg.provider ?? new SimulatedRepairProvider(db);
   const repair = new RepairService(db, svc, evidence, cfg.now);
+  const fixtureLlm = new FixtureLlmProvider();
+  const llm = cfg.llm ?? new ResilientLlm(fixtureLlm, fixtureLlm);
+  // The agent reaches the domain only through the real MCP endpoint of this same server, with a server-minted agent credential.
+  const gatewayFor = cfg.gatewayFor ?? ((p: Principal) => {
+    const addr = app.server.address();
+    if (!addr || typeof addr === "string") throw new AppError("NOT_LISTENING", "Server is not listening", 500);
+    return new McpToolGateway(`http://127.0.0.1:${addr.port}/mcp`, issueToken(cfg.sessionSecret, p.userId, p.householdId, "agent", 120));
+  });
+  const conversations = new ConversationService(db, llm, gatewayFor);
   const exec = new ExecutionService(db, svc, provider, cfg.retry ?? DEFAULT_RETRY, cfg.now);
 
   // Uploads are raw bodies (application/pdf | text/plain) with metadata in the query string.
@@ -58,6 +71,7 @@ export function buildApp(db: Db, cfg: AppConfig): FastifyInstance {
     return p;
   };
 
+  const idParam = (req: { params: unknown }) => z.object({ id: z.string().uuid() }).parse(req.params).id;
   app.get("/health/live", async () => ({ status: "ok" }));
   app.get("/health/ready", async (_req, reply) => {
     try { await db.$queryRaw`SELECT 1`; return { status: "ready" }; } catch { return reply.status(503).send({ status: "db_unavailable" }); }
@@ -99,8 +113,55 @@ export function buildApp(db: Db, cfg: AppConfig): FastifyInstance {
   app.get("/api/v1/documents", async (req) => ({ documents: await docs.list(await authenticate(req), z.object({ applianceId: z.string().uuid().optional() }).parse(req.query).applianceId) }));
   app.get("/api/v1/documents/:id", async (req) => ({ document: await docs.get(await authenticate(req), z.object({ id: z.string().uuid() }).parse(req.params).id) }));
 
+  // --- conversations (browser/user scope; the agent acts via MCP, never with this credential) ---
+  app.post("/api/v1/conversations", async (req, reply) => reply.status(201).send({ session: await conversations.start(await authenticate(req, ["user"])) }));
+  app.get("/api/v1/conversations/:id", async (req) => conversations.get(await authenticate(req, ["user"]), z.object({ id: z.string().uuid() }).parse(req.params).id));
+  app.post("/api/v1/conversations/:id/messages", async (req) => {
+    const p = await authenticate(req, ["user"]);
+    const body = z.object({ text: z.string().trim().min(1).max(2000) }).parse(req.body);
+    return conversations.send(p, z.object({ id: z.string().uuid() }).parse(req.params).id, body.text);
+  });
+
+  app.get("/api/v1/households/current", async (req) => {
+    const p = await authenticate(req);
+    const h = await db.household.findUniqueOrThrow({ where: { id: p.householdId } });
+    return { household: { id: h.id, name: h.name, timezone: h.timezone }, role: p.role };
+  });
+  app.get("/api/v1/appliances/:id", async (req) => {
+    const p = await authenticate(req);
+    const a = await db.appliance.findUnique({ where: { id: idParam(req) } });
+    if (!a || a.householdId !== p.householdId) throw new AppError("APPLIANCE_NOT_FOUND", "appliance not found", 404);
+    return { appliance: a, documents: await docs.list(p, a.id) };
+  });
+  app.post("/api/v1/appliances", async (req, reply) => {
+    const p = await authenticate(req, ["user"]);
+    if (p.role === "VIEWER") throw new AppError("FORBIDDEN", "Not authorized for this resource", 403);
+    const b = z.object({ category: z.string().min(2).max(40), brand: z.string().min(1).max(60), modelNumber: z.string().min(2).max(60), serialNumber: z.string().max(60).optional(), location: z.string().max(60).optional(), notes: z.string().max(500).optional() }).parse(req.body);
+    return reply.status(201).send({ appliance: await db.appliance.create({ data: { ...b, householdId: p.householdId } }) });
+  });
+  app.patch("/api/v1/appliances/:id", async (req) => {
+    const p = await authenticate(req, ["user"]);
+    const cur = await db.appliance.findUnique({ where: { id: idParam(req) } });
+    if (!cur || cur.householdId !== p.householdId) throw new AppError("APPLIANCE_NOT_FOUND", "appliance not found", 404);
+    const b = z.object({ brand: z.string().min(1).max(60), modelNumber: z.string().min(2).max(60), location: z.string().max(60).nullable(), notes: z.string().max(500).nullable() }).partial().parse(req.body);
+    return { appliance: await db.appliance.update({ where: { id: cur.id }, data: b }) };
+  });
+
+  const demo = new DemoService(db, cfg.storage, svc, repair, exec, provider);
+  const demoApplianceId = async (p: Principal) => (await db.appliance.findFirstOrThrow({ where: { householdId: p.householdId }, orderBy: { createdAt: "asc" } })).id;
+  app.post("/api/v1/demo/reset", async (req) => {
+    const p = await authenticate(req, ["user"]);
+    if (!cfg.demoMode) throw new AppError("DEMO_DISABLED", "Demo mode disabled", 404);
+    return demo.reset(p, await demoApplianceId(p));
+  });
+  app.post("/api/v1/demo/scenario", async (req) => {
+    const p = await authenticate(req, ["user"]);
+    if (!cfg.demoMode) throw new AppError("DEMO_DISABLED", "Demo mode disabled", 404);
+    const b = z.object({ scenario: z.enum(SCENARIOS) }).parse(req.body);
+    return demo.launch(p, b.scenario, await demoApplianceId(p));
+  });
+
   // --- approvals: human decisions require a scope:"user" credential; the MCP/agent credential is refused ---
-  const idParam = (req: { params: unknown }) => z.object({ id: z.string().uuid() }).parse(req.params).id;
   app.get("/api/v1/approvals/:id", async (req) => repair.getApproval(await authenticate(req), idParam(req)));
   app.post("/api/v1/approvals/:id/approve", async (req) => repair.decide(await authenticate(req, ["user"]), idParam(req), "APPROVED"));
   app.post("/api/v1/approvals/:id/reject", async (req) => repair.decide(await authenticate(req, ["user"]), idParam(req), "REJECTED"));
