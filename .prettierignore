@@ -1,0 +1,10 @@
+node_modules
+.next
+storage
+.e2e-storage
+.pgdata
+test-results
+pnpm-lock.yaml
+prisma/migrations
+docs/submission/screenshots
+*.pdf

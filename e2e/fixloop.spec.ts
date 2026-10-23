@@ -4,7 +4,11 @@ import { launch, openHome, say } from "./helpers";
 
 test.describe.configure({ mode: "serial" });
 // Deterministic tests: speech synthesis off (headless engines are unreliable). Voice state handling is covered by the adapter's fallback timer.
-test.beforeEach(async ({ page }) => { await page.addInitScript(() => { Object.defineProperty(window, "speechSynthesis", { value: undefined, configurable: true }); }); });
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(window, "speechSynthesis", { value: undefined, configurable: true });
+  });
+});
 
 test("golden path: report -> safety -> evidence -> approval -> send -> refresh -> resume -> timeline -> resolve", async ({ page }) => {
   await launch(page, "dishwasher_leak");
@@ -46,10 +50,21 @@ test("golden path: report -> safety -> evidence -> approval -> send -> refresh -
   await expect(reply).toContainText("in progress");
   await expect(reply).toContainText("not verified");
 
-  await page.getByRole("link", { name: /dishwasher is leaking/i }).first().click();
+  await page
+    .getByRole("link", { name: /dishwasher is leaking/i })
+    .first()
+    .click();
   await expect(page.getByRole("heading", { level: 1 })).toContainText("dishwasher is leaking");
   const timeline = page.getByRole("list", { name: "Case timeline" });
-  for (const e of ["Incident created", "Safety assessed", "Repair drafted", "Approval requested", "Approval granted", "Repair request submitted"]) await expect(timeline).toContainText(e);
+  for (const e of [
+    "Incident created",
+    "Safety assessed",
+    "Repair drafted",
+    "Approval requested",
+    "Approval granted",
+    "Repair request submitted",
+  ])
+    await expect(timeline).toContainText(e);
   await expect(page.getByText("External completion is not verified").first()).toBeVisible();
   await expect(page.getByText(/no real technician was contacted/i).first()).toBeVisible();
 
@@ -107,7 +122,10 @@ test("resume scenario answers from persisted state", async ({ page }) => {
 });
 
 test("microphone unavailable: text input still works and the UI says so", async ({ page }) => {
-  await page.addInitScript(() => { delete (window as any).SpeechRecognition; delete (window as any).webkitSpeechRecognition; });
+  await page.addInitScript(() => {
+    delete (window as any).SpeechRecognition;
+    delete (window as any).webkitSpeechRecognition;
+  });
   await launch(page, "dishwasher_leak");
   await expect(page.getByTestId("no-mic")).toBeVisible();
   await expect(page.getByRole("button", { name: /Push to talk/ })).toBeDisabled();
@@ -130,10 +148,18 @@ test("network interruption shows an error and recovers on retry", async ({ page 
 test("gateway security: CSRF required, unknown prefixes blocked, other households unreachable", async ({ page }) => {
   await openHome(page);
   const r = await page.evaluate(async () => {
-    const csrf = document.cookie.split("; ").find((c) => c.startsWith("fl_csrf="))?.split("=")[1] ?? "";
-    const post = (h: Record<string, string>) => fetch("/api/gateway/demo/reset", { method: "POST", headers: { "content-type": "application/json", ...h }, body: "{}" }).then((x) => x.status);
+    const csrf =
+      document.cookie
+        .split("; ")
+        .find((c) => c.startsWith("fl_csrf="))
+        ?.split("=")[1] ?? "";
+    const post = (h: Record<string, string>) =>
+      fetch("/api/gateway/demo/reset", { method: "POST", headers: { "content-type": "application/json", ...h }, body: "{}" }).then(
+        (x) => x.status,
+      );
     return {
-      noCsrf: await post({}), badCsrf: await post({ "x-fixloop-csrf": "nope" }),
+      noCsrf: await post({}),
+      badCsrf: await post({ "x-fixloop-csrf": "nope" }),
       health: await fetch("/api/gateway/health/ready").then((x) => x.status),
       unknownIncident: await fetch("/api/gateway/incidents/00000000-0000-4000-8000-0000000000aa").then((x) => x.status),
       tokenVisible: document.cookie.includes("fl_session"),
@@ -154,10 +180,16 @@ test("appliance library: add an appliance and upload documents (valid and malfor
   await page.getByRole("button", { name: "Add appliance" }).click();
   await expect(page.getByRole("heading", { name: "Zenith ZN-OV9" })).toBeVisible();
   const card = page.getByRole("region", { name: "Zenith ZN-OV9" });
-  await card.locator('input[type="file"]').setInputFiles({ name: "oven-notes.txt", mimeType: "text/plain", buffer: Buffer.from("Brand: Zenith\nModel: ZN-OV9\nPreheat the oven before baking. Clean the oven door glass monthly.") });
+  await card.locator('input[type="file"]').setInputFiles({
+    name: "oven-notes.txt",
+    mimeType: "text/plain",
+    buffer: Buffer.from("Brand: Zenith\nModel: ZN-OV9\nPreheat the oven before baking. Clean the oven door glass monthly."),
+  });
   await card.getByRole("button", { name: "Upload & index" }).click();
   await expect(card.getByRole("status")).toContainText("Indexed");
-  await card.locator('input[type="file"]').setInputFiles({ name: "bad.pdf", mimeType: "application/pdf", buffer: Buffer.from("%PDF-1.4 not really") });
+  await card
+    .locator('input[type="file"]')
+    .setInputFiles({ name: "bad.pdf", mimeType: "application/pdf", buffer: Buffer.from("%PDF-1.4 not really") });
   await card.getByRole("button", { name: "Upload & index" }).click();
   await expect(card.getByRole("alert")).toContainText("MALFORMED_PDF");
 });

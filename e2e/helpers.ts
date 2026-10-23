@@ -8,8 +8,16 @@ export async function openHome(page: Page) {
 export async function launch(page: Page, scenario: string) {
   await page.goto("/demo");
   const status = await page.evaluate(async (s) => {
-    const csrf = document.cookie.split("; ").find((c) => c.startsWith("fl_csrf="))?.split("=")[1] ?? "";
-    const r = await fetch("/api/gateway/demo/scenario", { method: "POST", headers: { "content-type": "application/json", "x-fixloop-csrf": csrf }, body: JSON.stringify({ scenario: s }) });
+    const csrf =
+      document.cookie
+        .split("; ")
+        .find((c) => c.startsWith("fl_csrf="))
+        ?.split("=")[1] ?? "";
+    const r = await fetch("/api/gateway/demo/scenario", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-fixloop-csrf": csrf },
+      body: JSON.stringify({ scenario: s }),
+    });
     return r.status;
   }, scenario);
   expect(status).toBe(200);
