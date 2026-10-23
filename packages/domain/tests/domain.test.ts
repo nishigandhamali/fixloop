@@ -3,7 +3,14 @@ import { assertTransition, canTransition, IllegalTransitionError, assessSafety, 
 
 describe("state machine", () => {
   it("allows the happy path", () => {
-    for (const [a, b] of [["CREATED","TRIAGING"],["TRIAGING","READY_FOR_EVIDENCE"],["READY_FOR_EVIDENCE","EVIDENCE_REVIEW"],["EVIDENCE_REVIEW","ACTION_PENDING"],["ACTION_PENDING","IN_PROGRESS"],["IN_PROGRESS","RESOLVED"]] as const)
+    for (const [a, b] of [
+      ["CREATED", "TRIAGING"],
+      ["TRIAGING", "READY_FOR_EVIDENCE"],
+      ["READY_FOR_EVIDENCE", "EVIDENCE_REVIEW"],
+      ["EVIDENCE_REVIEW", "ACTION_PENDING"],
+      ["ACTION_PENDING", "IN_PROGRESS"],
+      ["IN_PROGRESS", "RESOLVED"],
+    ] as const)
       expect(canTransition(a, b)).toBe(true);
   });
   it("rejects illegal jumps", () => {
@@ -19,7 +26,8 @@ describe("safety engine", () => {
   it("abstains when unanswered", () => expect(assessSafety({}).riskLevel).toBe("UNKNOWN"));
   it("LOW when all answered safe", () => {
     const r = assessSafety(benign);
-    expect(r.riskLevel).toBe("LOW"); expect(r.escalationRequired).toBe(false);
+    expect(r.riskLevel).toBe("LOW");
+    expect(r.escalationRequired).toBe(false);
   });
   it.each([
     [{ ...benign, smokeOrBurningSmell: true }],
@@ -29,7 +37,8 @@ describe("safety engine", () => {
     [{ ...benign, freeText: "I see smoke" }],
   ])("escalates emergencies %#", (a) => {
     const r = assessSafety(a);
-    expect(r.riskLevel).toBe("EMERGENCY"); expect(r.escalationRequired).toBe(true);
+    expect(r.riskLevel).toBe("EMERGENCY");
+    expect(r.escalationRequired).toBe(true);
     expect(r.allowedNextActions).not.toContain("DRAFT_REPAIR_REQUEST");
     expect(r.safeResponse).toMatch(/not an emergency service/);
   });

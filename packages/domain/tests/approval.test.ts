@@ -1,7 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { actionPayloadHash, backoffDelayMs, type ActionPayload } from "../src/index.js";
 
-const base: ActionPayload = { actionType: "SUBMIT_REPAIR_REQUEST", incidentId: "i", repairRequestId: "r", recipientType: "REPAIR_TECHNICIAN", recipientAddress: null, subject: "s", body: "b" };
+const base: ActionPayload = {
+  actionType: "SUBMIT_REPAIR_REQUEST",
+  incidentId: "i",
+  repairRequestId: "r",
+  recipientType: "REPAIR_TECHNICIAN",
+  recipientAddress: null,
+  subject: "s",
+  body: "b",
+};
 
 describe("action payload hash", () => {
   it("is stable and sensitive to every field", () => {

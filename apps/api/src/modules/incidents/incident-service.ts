@@ -1,6 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
-import { ACTIVE_STATES, assertTransition, assessSafety, IllegalTransitionError, maxRisk, type SafetyAnswers, type WorkflowState } from "@fixloop/domain";
+import {
+  ACTIVE_STATES,
+  assertTransition,
+  assessSafety,
+  IllegalTransitionError,
+  maxRisk,
+  type SafetyAnswers,
+  type WorkflowState,
+} from "@fixloop/domain";
 import type { Db } from "../../db.js";
 import { AppError, forbidden, notFound } from "../../errors.js";
 import type { Principal } from "../../principal.js";
@@ -16,17 +24,47 @@ export class IncidentService {
     if (!inc || inc.householdId !== p.householdId) throw notFound("incident");
     return inc;
   }
-  private requireWriter(p: Principal) { if (p.role === "VIEWER") throw forbidden(); }
+  private requireWriter(p: Principal) {
+    if (p.role === "VIEWER") throw forbidden();
+  }
 
-  async event(tx: Tx, p: Principal, incidentId: string, eventType: string, payload: object, actorType: "USER" | "SYSTEM" | "AGENT" | "TOOL" | "EXTERNAL" = "TOOL", idempotencyKey?: string) {
-    return tx.incidentEvent.create({ data: { incidentId, actorType, actorId: p.userId, eventType, structuredPayload: payload as Prisma.InputJsonValue, correlationId: p.correlationId, idempotencyKey } });
+  async event(
+    tx: Tx,
+    p: Principal,
+    incidentId: string,
+    eventType: string,
+    payload: object,
+    actorType: "USER" | "SYSTEM" | "AGENT" | "TOOL" | "EXTERNAL" = "TOOL",
+    idempotencyKey?: string,
+  ) {
+    return tx.incidentEvent.create({
+      data: {
+        incidentId,
+        actorType,
+        actorId: p.userId,
+        eventType,
+        structuredPayload: payload as Prisma.InputJsonValue,
+        correlationId: p.correlationId,
+        idempotencyKey,
+      },
+    });
   }
 
   /** Transition with optimistic concurrency (version check) + event in one transaction. */
-  async transition(tx: Tx, p: Principal, incidentId: string, to: WorkflowState, eventType: string, payload: object = {}, extra: Prisma.IncidentUpdateManyMutationInput = {}) {
+  async transition(
+    tx: Tx,
+    p: Principal,
+    incidentId: string,
+    to: WorkflowState,
+    eventType: string,
+    payload: object = {},
+    extra: Prisma.IncidentUpdateManyMutationInput = {},
+  ) {
     const inc = await this.load(tx, p, incidentId);
     if (inc.workflowStatus === to) return inc; // idempotent no-op
-    try { assertTransition(inc.workflowStatus, to); } catch (e) {
+    try {
+      assertTransition(inc.workflowStatus, to);
+    } catch (e) {
       if (e instanceof IllegalTransitionError) throw new AppError("ILLEGAL_TRANSITION", e.message, 409);
       throw e;
     }
@@ -53,7 +91,15 @@ export class IncidentService {
         if (!a || a.householdId !== p.householdId) throw notFound("appliance");
       }
       const title = input.description.length > 80 ? input.description.slice(0, 77) + "..." : input.description;
-      const inc = await tx.incident.create({ data: { householdId: p.householdId, applianceId: input.applianceId ?? null, title, description: input.description, createdByUserId: p.userId } });
+      const inc = await tx.incident.create({
+        data: {
+          householdId: p.householdId,
+          applianceId: input.applianceId ?? null,
+          title,
+          description: input.description,
+          createdByUserId: p.userId,
+        },
+      });
       await this.event(tx, p, inc.id, "INCIDENT_CREATED", { applianceId: input.applianceId ?? null }, "TOOL", input.idempotencyKey);
       const triaging = await this.transition(tx, p, inc.id, "TRIAGING", "TRIAGE_STARTED");
       return { incident: triaging, replayed: false };
@@ -86,7 +132,9 @@ export class IncidentService {
   async timeline(p: Principal, incidentId: string, opts: { limit: number; cursor?: string | undefined }) {
     await this.load(this.db, p, incidentId);
     const rows = await this.db.incidentEvent.findMany({
-      where: { incidentId }, orderBy: [{ timestamp: "asc" }, { id: "asc" }], take: opts.limit + 1,
+      where: { incidentId },
+      orderBy: [{ timestamp: "asc" }, { id: "asc" }],
+      take: opts.limit + 1,
       ...(opts.cursor ? { cursor: { id: opts.cursor }, skip: 1 } : {}),
     });
     const nextCursor = rows.length > opts.limit ? rows[opts.limit - 1]!.id : null;
@@ -101,16 +149,42 @@ export class IncidentService {
       // Sticky escalation: never lower a previously recorded risk.
       const risk = inc.severity === "HIGH" || inc.severity === "EMERGENCY" ? maxRisk(inc.severity, r.riskLevel) : r.riskLevel;
       const stickyEscalated = risk === "EMERGENCY" || risk === "HIGH";
-      const result = stickyEscalated && !r.escalationRequired
-        ? { ...r, riskLevel: risk, safeResponse: "An earlier report on this incident indicated a safety hazard, so conservative guidance still applies. Stay clear of the appliance and contact a licensed professional or your local emergency number. I have not contacted anyone for you." }
-        : r;
-      await tx.safetyAssessment.create({ data: { incidentId, identifiedHazards: result.hazards, answers: answers as object, riskLevel: result.riskLevel, escalationRequired: stickyEscalated || result.escalationRequired, ruleVersion: result.ruleVersion } });
-      await tx.incident.update({ where: { id: incidentId }, data: { severity: risk, safetyStatus: stickyEscalated ? "ESCALATED" : result.riskLevel === "UNKNOWN" ? "NEEDS_ANSWERS" : "CLEARED" } });
+      const result =
+        stickyEscalated && !r.escalationRequired
+          ? {
+              ...r,
+              riskLevel: risk,
+              safeResponse:
+                "An earlier report on this incident indicated a safety hazard, so conservative guidance still applies. Stay clear of the appliance and contact a licensed professional or your local emergency number. I have not contacted anyone for you.",
+            }
+          : r;
+      await tx.safetyAssessment.create({
+        data: {
+          incidentId,
+          identifiedHazards: result.hazards,
+          answers: answers as object,
+          riskLevel: result.riskLevel,
+          escalationRequired: stickyEscalated || result.escalationRequired,
+          ruleVersion: result.ruleVersion,
+        },
+      });
+      await tx.incident.update({
+        where: { id: incidentId },
+        data: {
+          severity: risk,
+          safetyStatus: stickyEscalated ? "ESCALATED" : result.riskLevel === "UNKNOWN" ? "NEEDS_ANSWERS" : "CLEARED",
+        },
+      });
       await this.event(tx, p, incidentId, "SAFETY_ASSESSED", { riskLevel: risk, hazards: result.hazards, ruleVersion: result.ruleVersion });
       if (stickyEscalated) await this.transition(tx, p, incidentId, "SAFETY_ESCALATED", "SAFETY_ESCALATED", { hazards: result.hazards });
       else if (result.riskLevel === "LOW") await this.transition(tx, p, incidentId, "READY_FOR_EVIDENCE", "SAFETY_CLEARED");
       const escalationRequired = stickyEscalated || r.escalationRequired;
-      return { ...result, riskLevel: risk, escalationRequired, allowedNextActions: escalationRequired ? ["SHOW_EMERGENCY_GUIDANCE", "RECORD_OUTCOME"] : result.allowedNextActions };
+      return {
+        ...result,
+        riskLevel: risk,
+        escalationRequired,
+        allowedNextActions: escalationRequired ? ["SHOW_EMERGENCY_GUIDANCE", "RECORD_OUTCOME"] : result.allowedNextActions,
+      };
     });
   }
 
@@ -119,7 +193,15 @@ export class IncidentService {
     return this.db.$transaction(async (tx) => {
       const inc = await this.load(tx, p, incidentId);
       if (inc.workflowStatus === "RESOLVED") return { incident: inc, replayed: true };
-      const out = await this.transition(tx, p, incidentId, "RESOLVED", "INCIDENT_RESOLVED", { summary, idempotencyKey }, { resolvedAt: new Date(), summary });
+      const out = await this.transition(
+        tx,
+        p,
+        incidentId,
+        "RESOLVED",
+        "INCIDENT_RESOLVED",
+        { summary, idempotencyKey },
+        { resolvedAt: new Date(), summary },
+      );
       return { incident: out, replayed: false };
     });
   }

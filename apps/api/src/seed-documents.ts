@@ -7,7 +7,11 @@ import type { Principal } from "./principal.js";
 
 export const FIXTURE_DIR = new URL("../../../fixtures/", import.meta.url).pathname;
 
-export interface FixtureSpec { file: string; type: "MANUAL" | "WARRANTY"; contentType: string }
+export interface FixtureSpec {
+  file: string;
+  type: "MANUAL" | "WARRANTY";
+  contentType: string;
+}
 export const FIXTURES = {
   manual: { file: "manuals/aquavelle-aq-dw450-manual.pdf", type: "MANUAL", contentType: "application/pdf" },
   wrongModel: { file: "manuals/aquavelle-aq-dw900-manual-WRONG-MODEL.pdf", type: "MANUAL", contentType: "application/pdf" },
@@ -18,7 +22,14 @@ export const FIXTURES = {
 
 export async function ingestFixture(db: Db, storage: BlobStorage, p: Principal, applianceId: string, spec: FixtureSpec) {
   const bytes = await readFile(join(FIXTURE_DIR, spec.file));
-  return new DocumentService(db, storage, 50_000_000).ingest(p, { filename: spec.file.split("/").pop()!, contentType: spec.contentType, bytes, type: spec.type, applianceId, sourceType: "SYNTHETIC_FIXTURE" });
+  return new DocumentService(db, storage, 50_000_000).ingest(p, {
+    filename: spec.file.split("/").pop()!,
+    contentType: spec.contentType,
+    bytes,
+    type: spec.type,
+    applianceId,
+    sourceType: "SYNTHETIC_FIXTURE",
+  });
 }
 
 /** Default demo set: correct manual + expired warranty (the two documents a real user would plausibly have). */

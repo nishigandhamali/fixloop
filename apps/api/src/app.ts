@@ -12,6 +12,7 @@ import { DocumentService } from "./modules/documents/document-service.js";
 import { EvidenceService } from "./modules/documents/evidence-service.js";
 import type { BlobStorage } from "./adapters/storage.js";
 import { SimulatedRepairProvider, type Fault } from "./adapters/provider.js";
+import { Metrics } from "./observability.js";
 import { ConversationService } from "./modules/agent/conversation-service.js";
 import { McpToolGateway, type ToolGateway } from "./modules/agent/tools.js";
 import { FixtureLlmProvider, ResilientLlm, type LlmProvider } from "./modules/agent/llm.js";
@@ -19,12 +20,36 @@ import { DemoService, SCENARIOS } from "./modules/demo/demo-service.js";
 import { RepairService } from "./modules/repair/repair-service.js";
 import { ExecutionService, DEFAULT_RETRY, type RetryConfig } from "./modules/repair/execution-service.js";
 
-export interface AppConfig { sessionSecret: string; demoMode: boolean; allowedOrigins: string[]; storage: BlobStorage; maxUploadBytes: number; now?: () => Date; provider?: SimulatedRepairProvider; retry?: RetryConfig; llm?: LlmProvider; gatewayFor?: (p: Principal) => ToolGateway }
+export interface AppConfig {
+  sessionSecret: string;
+  demoMode: boolean;
+  allowedOrigins: string[];
+  storage: BlobStorage;
+  maxUploadBytes: number;
+  now?: () => Date;
+  provider?: SimulatedRepairProvider;
+  retry?: RetryConfig;
+  llm?: LlmProvider;
+  gatewayFor?: (p: Principal) => ToolGateway;
+  rateLimitPerMinute?: number;
+}
 
-declare module "fastify" { interface FastifyRequest { principal?: Principal } }
+declare module "fastify" {
+  interface FastifyRequest {
+    principal?: Principal;
+  }
+}
 
 export function buildApp(db: Db, cfg: AppConfig): FastifyInstance {
-  const app = Fastify({ logger: process.env.NODE_ENV === "test" ? false : { redact: ["req.headers.authorization"] }, bodyLimit: 1_000_000, genReqId: () => randomUUID() });
+  const app = Fastify({
+    logger: process.env.NODE_ENV === "test" ? false : { redact: ["req.headers.authorization"] },
+    bodyLimit: 1_000_000,
+    genReqId: () => randomUUID(),
+  });
+  const metrics = new Metrics();
+  // Fixed-window per-IP limiter (single-process; use a shared store behind multiple instances).
+  const windows = new Map<string, { n: number; resetAt: number }>();
+  const limit = cfg.rateLimitPerMinute ?? 600;
   const svc = new IncidentService(db);
   const docs = new DocumentService(db, cfg.storage, cfg.maxUploadBytes);
   const evidence = new EvidenceService(db, cfg.now);
@@ -33,33 +58,71 @@ export function buildApp(db: Db, cfg: AppConfig): FastifyInstance {
   const fixtureLlm = new FixtureLlmProvider();
   const llm = cfg.llm ?? new ResilientLlm(fixtureLlm, fixtureLlm);
   // The agent reaches the domain only through the real MCP endpoint of this same server, with a server-minted agent credential.
-  const gatewayFor = cfg.gatewayFor ?? ((p: Principal) => {
-    const addr = app.server.address();
-    if (!addr || typeof addr === "string") throw new AppError("NOT_LISTENING", "Server is not listening", 500);
-    return new McpToolGateway(`http://127.0.0.1:${addr.port}/mcp`, issueToken(cfg.sessionSecret, p.userId, p.householdId, "agent", 120));
-  });
+  const gatewayFor =
+    cfg.gatewayFor ??
+    ((p: Principal) => {
+      const addr = app.server.address();
+      if (!addr || typeof addr === "string") throw new AppError("NOT_LISTENING", "Server is not listening", 500);
+      return new McpToolGateway(`http://127.0.0.1:${addr.port}/mcp`, issueToken(cfg.sessionSecret, p.userId, p.householdId, "agent", 120));
+    });
   const conversations = new ConversationService(db, llm, gatewayFor);
   const exec = new ExecutionService(db, svc, provider, cfg.retry ?? DEFAULT_RETRY, cfg.now);
 
   // Uploads are raw bodies (application/pdf | text/plain) with metadata in the query string.
-  for (const ct of ["application/pdf", "text/plain"]) app.addContentTypeParser(ct, { parseAs: "buffer", bodyLimit: cfg.maxUploadBytes }, (_req, body, done) => done(null, body));
+  for (const ct of ["application/pdf", "text/plain"])
+    app.addContentTypeParser(ct, { parseAs: "buffer", bodyLimit: cfg.maxUploadBytes }, (_req, body, done) => done(null, body));
 
   app.setErrorHandler((err: unknown, req, reply) => {
     const e = err as { validation?: unknown; statusCode?: number };
-    if (err instanceof AppError) return reply.status(err.status).send({ error: { code: err.code, message: err.message, correlationId: req.id } });
-    if (err instanceof z.ZodError) return reply.status(400).send({ error: { code: "VALIDATION_ERROR", message: err.issues.map((i) => i.message).join("; "), correlationId: req.id } });
+    if (err instanceof AppError)
+      return reply.status(err.status).send({ error: { code: err.code, message: err.message, correlationId: req.id } });
+    if (err instanceof z.ZodError)
+      return reply
+        .status(400)
+        .send({ error: { code: "VALIDATION_ERROR", message: err.issues.map((i) => i.message).join("; "), correlationId: req.id } });
     const sc = e.statusCode;
-    if (sc === 413) return reply.status(413).send({ error: { code: "PAYLOAD_TOO_LARGE", message: "Request body too large", correlationId: req.id } });
-    if (sc === 415) return reply.status(415).send({ error: { code: "UNSUPPORTED_MEDIA_TYPE", message: "Unsupported content type", correlationId: req.id } });
-    if (sc && sc >= 400 && sc < 500) return reply.status(sc).send({ error: { code: "BAD_REQUEST", message: "Bad request", correlationId: req.id } });
+    if (sc === 429)
+      return reply.status(429).send({ error: { code: "RATE_LIMITED", message: "Too many requests; slow down", correlationId: req.id } });
+    if (sc === 413)
+      return reply.status(413).send({ error: { code: "PAYLOAD_TOO_LARGE", message: "Request body too large", correlationId: req.id } });
+    if (sc === 415)
+      return reply
+        .status(415)
+        .send({ error: { code: "UNSUPPORTED_MEDIA_TYPE", message: "Unsupported content type", correlationId: req.id } });
+    if (sc && sc >= 400 && sc < 500)
+      return reply.status(sc).send({ error: { code: "BAD_REQUEST", message: "Bad request", correlationId: req.id } });
     req.log.error({ err }, "unhandled");
     return reply.status(500).send({ error: { code: "INTERNAL_ERROR", message: "Unexpected error", correlationId: req.id } });
+  });
+
+  app.addHook("onSend", async (req, reply) => {
+    reply.header("x-correlation-id", req.id);
+    reply.header("x-content-type-options", "nosniff");
+    reply.header("referrer-policy", "no-referrer");
+    reply.header("cache-control", "no-store");
+  });
+
+  app.addHook("onRequest", async (req) => {
+    if (req.url.startsWith("/health")) return;
+    const now = Date.now();
+    const w = windows.get(req.ip);
+    if (!w || w.resetAt <= now) {
+      windows.set(req.ip, { n: 1, resetAt: now + 60_000 });
+      if (windows.size > 10_000) windows.clear();
+      return;
+    }
+    if (++w.n > limit) throw new AppError("RATE_LIMITED", "Too many requests; slow down", 429);
   });
 
   app.addHook("onRequest", async (req, reply) => {
     const origin = req.headers.origin;
     if (origin && !cfg.allowedOrigins.includes(origin)) throw new AppError("ORIGIN_NOT_ALLOWED", "Origin not allowed", 403);
-    if (origin) { reply.header("access-control-allow-origin", origin); reply.header("vary", "origin"); reply.header("access-control-allow-headers", "authorization,content-type,mcp-session-id,mcp-protocol-version"); reply.header("access-control-allow-methods", "GET,POST,DELETE,OPTIONS"); }
+    if (origin) {
+      reply.header("access-control-allow-origin", origin);
+      reply.header("vary", "origin");
+      reply.header("access-control-allow-headers", "authorization,content-type,mcp-session-id,mcp-protocol-version");
+      reply.header("access-control-allow-methods", "GET,POST,DELETE,OPTIONS");
+    }
     if (req.method === "OPTIONS") return reply.status(204).send();
   });
 
@@ -72,9 +135,18 @@ export function buildApp(db: Db, cfg: AppConfig): FastifyInstance {
   };
 
   const idParam = (req: { params: unknown }) => z.object({ id: z.string().uuid() }).parse(req.params).id;
+  app.get("/api/v1/metrics", async (req) => {
+    await authenticate(req, ["user"]);
+    return { tools: metrics.snapshot() };
+  });
   app.get("/health/live", async () => ({ status: "ok" }));
   app.get("/health/ready", async (_req, reply) => {
-    try { await db.$queryRaw`SELECT 1`; return { status: "ready" }; } catch { return reply.status(503).send({ status: "db_unavailable" }); }
+    try {
+      await db.$queryRaw`SELECT 1`;
+      return { status: "ready" };
+    } catch {
+      return reply.status(503).send({ status: "db_unavailable" });
+    }
   });
 
   // --- local demo session (NOT production auth) ---
@@ -82,9 +154,16 @@ export function buildApp(db: Db, cfg: AppConfig): FastifyInstance {
     if (!cfg.demoMode) throw new AppError("DEMO_DISABLED", "Demo mode disabled", 404);
     const m = await db.householdMember.findFirst({ where: { household: { name: { startsWith: "Demo Household" } } } });
     if (!m) throw new AppError("NOT_SEEDED", "Run pnpm db:seed", 500);
-    return { token: issueToken(cfg.sessionSecret, m.userId, m.householdId, "user"), agentToken: issueToken(cfg.sessionSecret, m.userId, m.householdId, "agent"), householdId: m.householdId };
+    return {
+      token: issueToken(cfg.sessionSecret, m.userId, m.householdId, "user"),
+      agentToken: issueToken(cfg.sessionSecret, m.userId, m.householdId, "agent"),
+      householdId: m.householdId,
+    };
   });
-  app.get("/api/v1/session", async (req) => { const p = await authenticate(req); return { userId: p.userId, householdId: p.householdId, role: p.role }; });
+  app.get("/api/v1/session", async (req) => {
+    const p = await authenticate(req);
+    return { userId: p.userId, householdId: p.householdId, role: p.role };
+  });
 
   // --- REST surface (same services as MCP) ---
   app.get("/api/v1/appliances", async (req) => ({ appliances: await svc.listAppliances(await authenticate(req)) }));
@@ -100,31 +179,64 @@ export function buildApp(db: Db, cfg: AppConfig): FastifyInstance {
   });
   app.post("/api/v1/incidents", async (req, reply) => {
     const p = await authenticate(req);
-    const body = z.object({ applianceId: z.string().uuid().optional(), description: z.string().min(3).max(4000), idempotencyKey: z.string().min(8).max(128) }).parse(req.body);
+    const body = z
+      .object({
+        applianceId: z.string().uuid().optional(),
+        description: z.string().min(3).max(4000),
+        idempotencyKey: z.string().min(8).max(128),
+      })
+      .parse(req.body);
     const r = await svc.create(p, body);
     return reply.status(r.replayed ? 200 : 201).send({ incident: r.incident, replayed: r.replayed });
   });
-  app.get("/api/v1/incidents/:id", async (req) => svc.get(await authenticate(req), z.object({ id: z.string().uuid() }).parse(req.params).id));
+  app.get("/api/v1/incidents/:id", async (req) =>
+    svc.get(await authenticate(req), z.object({ id: z.string().uuid() }).parse(req.params).id),
+  );
   app.get("/api/v1/incidents/:id/events", async (req) => {
     const p = await authenticate(req);
     const id = z.object({ id: z.string().uuid() }).parse(req.params).id;
-    const q = z.object({ limit: z.coerce.number().int().min(1).max(100).default(50), cursor: z.string().uuid().optional() }).parse(req.query);
+    const q = z
+      .object({ limit: z.coerce.number().int().min(1).max(100).default(50), cursor: z.string().uuid().optional() })
+      .parse(req.query);
     return svc.timeline(p, id, q);
   });
 
   app.post("/api/v1/documents", { bodyLimit: cfg.maxUploadBytes }, async (req, reply) => {
     const p = await authenticate(req);
-    const q = z.object({ filename: z.string().min(1).max(200), type: z.enum(["MANUAL", "WARRANTY", "RECEIPT", "LEASE", "OTHER"]), applianceId: z.string().uuid().optional() }).parse(req.query);
+    const q = z
+      .object({
+        filename: z.string().min(1).max(200),
+        type: z.enum(["MANUAL", "WARRANTY", "RECEIPT", "LEASE", "OTHER"]),
+        applianceId: z.string().uuid().optional(),
+      })
+      .parse(req.query);
     if (!Buffer.isBuffer(req.body)) throw new AppError("UNSUPPORTED_MEDIA_TYPE", "Send the file as application/pdf or text/plain", 415);
-    const r = await docs.ingest(p, { filename: q.filename, type: q.type, applianceId: q.applianceId, contentType: req.headers["content-type"] ?? "", bytes: req.body });
+    const r = await docs.ingest(p, {
+      filename: q.filename,
+      type: q.type,
+      applianceId: q.applianceId,
+      contentType: req.headers["content-type"] ?? "",
+      bytes: req.body,
+    });
     return reply.status(r.duplicate ? 200 : 201).send({ document: r.document, duplicate: r.duplicate, chunkCount: r.chunkCount });
   });
-  app.get("/api/v1/documents", async (req) => ({ documents: await docs.list(await authenticate(req), z.object({ applianceId: z.string().uuid().optional() }).parse(req.query).applianceId) }));
-  app.get("/api/v1/documents/:id", async (req) => ({ document: await docs.get(await authenticate(req), z.object({ id: z.string().uuid() }).parse(req.params).id) }));
+  app.get("/api/v1/documents", async (req) => ({
+    documents: await docs.list(
+      await authenticate(req),
+      z.object({ applianceId: z.string().uuid().optional() }).parse(req.query).applianceId,
+    ),
+  }));
+  app.get("/api/v1/documents/:id", async (req) => ({
+    document: await docs.get(await authenticate(req), z.object({ id: z.string().uuid() }).parse(req.params).id),
+  }));
 
   // --- conversations (browser/user scope; the agent acts via MCP, never with this credential) ---
-  app.post("/api/v1/conversations", async (req, reply) => reply.status(201).send({ session: await conversations.start(await authenticate(req, ["user"])) }));
-  app.get("/api/v1/conversations/:id", async (req) => conversations.get(await authenticate(req, ["user"]), z.object({ id: z.string().uuid() }).parse(req.params).id));
+  app.post("/api/v1/conversations", async (req, reply) =>
+    reply.status(201).send({ session: await conversations.start(await authenticate(req, ["user"])) }),
+  );
+  app.get("/api/v1/conversations/:id", async (req) =>
+    conversations.get(await authenticate(req, ["user"]), z.object({ id: z.string().uuid() }).parse(req.params).id),
+  );
   app.post("/api/v1/conversations/:id/messages", async (req) => {
     const p = await authenticate(req, ["user"]);
     const body = z.object({ text: z.string().trim().min(1).max(2000) }).parse(req.body);
@@ -145,19 +257,37 @@ export function buildApp(db: Db, cfg: AppConfig): FastifyInstance {
   app.post("/api/v1/appliances", async (req, reply) => {
     const p = await authenticate(req, ["user"]);
     if (p.role === "VIEWER") throw new AppError("FORBIDDEN", "Not authorized for this resource", 403);
-    const b = z.object({ category: z.string().min(2).max(40), brand: z.string().min(1).max(60), modelNumber: z.string().min(2).max(60), serialNumber: z.string().max(60).optional(), location: z.string().max(60).optional(), notes: z.string().max(500).optional() }).parse(req.body);
+    const b = z
+      .object({
+        category: z.string().min(2).max(40),
+        brand: z.string().min(1).max(60),
+        modelNumber: z.string().min(2).max(60),
+        serialNumber: z.string().max(60).optional(),
+        location: z.string().max(60).optional(),
+        notes: z.string().max(500).optional(),
+      })
+      .parse(req.body);
     return reply.status(201).send({ appliance: await db.appliance.create({ data: { ...b, householdId: p.householdId } }) });
   });
   app.patch("/api/v1/appliances/:id", async (req) => {
     const p = await authenticate(req, ["user"]);
     const cur = await db.appliance.findUnique({ where: { id: idParam(req) } });
     if (!cur || cur.householdId !== p.householdId) throw new AppError("APPLIANCE_NOT_FOUND", "appliance not found", 404);
-    const b = z.object({ brand: z.string().min(1).max(60), modelNumber: z.string().min(2).max(60), location: z.string().max(60).nullable(), notes: z.string().max(500).nullable() }).partial().parse(req.body);
+    const b = z
+      .object({
+        brand: z.string().min(1).max(60),
+        modelNumber: z.string().min(2).max(60),
+        location: z.string().max(60).nullable(),
+        notes: z.string().max(500).nullable(),
+      })
+      .partial()
+      .parse(req.body);
     return { appliance: await db.appliance.update({ where: { id: cur.id }, data: b }) };
   });
 
   const demo = new DemoService(db, cfg.storage, svc, repair, exec, provider);
-  const demoApplianceId = async (p: Principal) => (await db.appliance.findFirstOrThrow({ where: { householdId: p.householdId }, orderBy: { createdAt: "asc" } })).id;
+  const demoApplianceId = async (p: Principal) =>
+    (await db.appliance.findFirstOrThrow({ where: { householdId: p.householdId }, orderBy: { createdAt: "asc" } })).id;
   app.post("/api/v1/demo/reset", async (req) => {
     const p = await authenticate(req, ["user"]);
     if (!cfg.demoMode) throw new AppError("DEMO_DISABLED", "Demo mode disabled", 404);
@@ -178,30 +308,45 @@ export function buildApp(db: Db, cfg: AppConfig): FastifyInstance {
     const b = z.object({ resolutionSummary: z.string().min(1).max(2000), idempotencyKey: z.string().min(8).max(128) }).parse(req.body);
     return svc.resolve(await authenticate(req, ["user"]), idParam(req), b.resolutionSummary, b.idempotencyKey);
   });
-  app.post("/api/v1/incidents/:id/reopen", async (req) => svc.reopen(await authenticate(req, ["user"]), idParam(req), z.object({ reason: z.string().min(1).max(1000) }).parse(req.body).reason));
+  app.post("/api/v1/incidents/:id/reopen", async (req) =>
+    svc.reopen(await authenticate(req, ["user"]), idParam(req), z.object({ reason: z.string().min(1).max(1000) }).parse(req.body).reason),
+  );
 
   // Demo-only fault injection for the simulated provider (interrupted-submission scenario).
   app.post("/api/v1/demo/provider-faults", async (req) => {
     await authenticate(req, ["user"]);
     if (!cfg.demoMode) throw new AppError("DEMO_DISABLED", "Demo mode disabled", 404);
-    const b = z.object({ faults: z.array(z.enum(["submit:fail_before", "submit:timeout_after", "submit:reject", "lookup:fail"])).max(10) }).parse(req.body);
+    const b = z
+      .object({ faults: z.array(z.enum(["submit:fail_before", "submit:timeout_after", "submit:reject", "lookup:fail"])).max(10) })
+      .parse(req.body);
     provider.script(...(b.faults as Fault[]));
     return { scripted: b.faults };
   });
 
   // --- MCP Streamable HTTP (stateless: one server+transport per request, bound to the authenticated principal) ---
-  app.route({ method: ["POST", "GET", "DELETE"], url: "/mcp", handler: async (req, reply) => {
-    const p = await authenticate(req, ["agent"]);
-    if (req.method !== "POST") { // stateless mode: no server-initiated SSE stream or sessions
-      return reply.status(405).header("allow", "POST").send({ jsonrpc: "2.0", error: { code: -32000, message: "Method not allowed (stateless server)" }, id: null });
-    }
-    const server = buildMcpServer({ incidents: svc, evidence, repair, exec }, p);
-    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
-    reply.hijack();
-    reply.raw.on("close", () => { void transport.close(); void server.close(); });
-    await server.connect(transport);
-    await transport.handleRequest(req.raw, reply.raw, req.body);
-  } });
+  app.route({
+    method: ["POST", "GET", "DELETE"],
+    url: "/mcp",
+    handler: async (req, reply) => {
+      const p = await authenticate(req, ["agent"]);
+      if (req.method !== "POST") {
+        // stateless mode: no server-initiated SSE stream or sessions
+        return reply
+          .status(405)
+          .header("allow", "POST")
+          .send({ jsonrpc: "2.0", error: { code: -32000, message: "Method not allowed (stateless server)" }, id: null });
+      }
+      const server = buildMcpServer({ metrics, incidents: svc, evidence, repair, exec }, p);
+      const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+      reply.hijack();
+      reply.raw.on("close", () => {
+        void transport.close();
+        void server.close();
+      });
+      await server.connect(transport);
+      await transport.handleRequest(req.raw, reply.raw, req.body);
+    },
+  });
 
   return app;
 }

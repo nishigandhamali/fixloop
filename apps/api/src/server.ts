@@ -5,9 +5,10 @@ import { AnthropicLlmProvider, FixtureLlmProvider, ResilientLlm, type LlmProvide
 const secret = process.env.SESSION_SECRET;
 if (!secret || secret.length < 32) throw new Error("SESSION_SECRET (>=32 chars) is required");
 const fixture = new FixtureLlmProvider();
-const primary: LlmProvider = process.env.LLM_PROVIDER === "anthropic"
-  ? new AnthropicLlmProvider({ apiKey: process.env.LLM_API_KEY ?? "", model: process.env.LLM_MODEL ?? "" })
-  : fixture;
+const primary: LlmProvider =
+  process.env.LLM_PROVIDER === "anthropic"
+    ? new AnthropicLlmProvider({ apiKey: process.env.LLM_API_KEY ?? "", model: process.env.LLM_MODEL ?? "" })
+    : fixture;
 const app = buildApp(createPrisma(), {
   llm: new ResilientLlm(primary, fixture),
   sessionSecret: secret,

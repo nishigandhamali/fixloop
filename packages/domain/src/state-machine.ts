@@ -1,6 +1,13 @@
 export const WORKFLOW_STATES = [
-  "CREATED", "TRIAGING", "SAFETY_ESCALATED", "READY_FOR_EVIDENCE", "EVIDENCE_REVIEW",
-  "ACTION_PENDING", "IN_PROGRESS", "RESOLVED", "CANCELED",
+  "CREATED",
+  "TRIAGING",
+  "SAFETY_ESCALATED",
+  "READY_FOR_EVIDENCE",
+  "EVIDENCE_REVIEW",
+  "ACTION_PENDING",
+  "IN_PROGRESS",
+  "RESOLVED",
+  "CANCELED",
 ] as const;
 export type WorkflowState = (typeof WORKFLOW_STATES)[number];
 
@@ -19,7 +26,10 @@ const TRANSITIONS: Record<WorkflowState, readonly WorkflowState[]> = {
 
 export class IllegalTransitionError extends Error {
   readonly code = "ILLEGAL_TRANSITION";
-  constructor(readonly from: WorkflowState, readonly to: WorkflowState) {
+  constructor(
+    readonly from: WorkflowState,
+    readonly to: WorkflowState,
+  ) {
     super(`Illegal transition ${from} -> ${to}`);
   }
 }
@@ -36,6 +46,4 @@ export function allowedTransitions(from: WorkflowState): readonly WorkflowState[
   return TRANSITIONS[from];
 }
 
-export const ACTIVE_STATES: readonly WorkflowState[] = WORKFLOW_STATES.filter(
-  (s) => s !== "RESOLVED" && s !== "CANCELED",
-);
+export const ACTIVE_STATES: readonly WorkflowState[] = WORKFLOW_STATES.filter((s) => s !== "RESOLVED" && s !== "CANCELED");

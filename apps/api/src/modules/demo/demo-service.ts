@@ -12,19 +12,49 @@ export const SCENARIOS = ["dishwasher_leak", "resume_incident", "wrong_model", "
 export type Scenario = (typeof SCENARIOS)[number];
 
 const META: Record<Scenario, { title: string; utterance: string; description: string }> = {
-  dishwasher_leak: { title: "Dishwasher leak", utterance: "My dishwasher is leaking and I don't know what to do", description: "Clean slate with the correct manual and warranty on file." },
-  resume_incident: { title: "Resume dishwasher incident", utterance: "What happened with my dishwasher?", description: "A dishwasher case already submitted to the simulated provider, in a fresh conversation." },
-  wrong_model: { title: "Wrong-model document", utterance: "My dishwasher is leaking and I don't know what to do", description: "Only a manual for a DIFFERENT model (AQ-DW900) is on file; its claims cannot be verified." },
-  emergency: { title: "Emergency escalation", utterance: "There is water leaking near the outlet behind my dishwasher", description: "Clean slate; speak a hazard phrase to see conservative guidance." },
-  interrupted_submission: { title: "Interrupted submission", utterance: "Send it", description: "An approved request; the first send times out after reaching the provider and status lookup fails, so the outcome is unknown until you retry." },
+  dishwasher_leak: {
+    title: "Dishwasher leak",
+    utterance: "My dishwasher is leaking and I don't know what to do",
+    description: "Clean slate with the correct manual and warranty on file.",
+  },
+  resume_incident: {
+    title: "Resume dishwasher incident",
+    utterance: "What happened with my dishwasher?",
+    description: "A dishwasher case already submitted to the simulated provider, in a fresh conversation.",
+  },
+  wrong_model: {
+    title: "Wrong-model document",
+    utterance: "My dishwasher is leaking and I don't know what to do",
+    description: "Only a manual for a DIFFERENT model (AQ-DW900) is on file; its claims cannot be verified.",
+  },
+  emergency: {
+    title: "Emergency escalation",
+    utterance: "There is water leaking near the outlet behind my dishwasher",
+    description: "Clean slate; speak a hazard phrase to see conservative guidance.",
+  },
+  interrupted_submission: {
+    title: "Interrupted submission",
+    utterance: "Send it",
+    description:
+      "An approved request; the first send times out after reaching the provider and status lookup fails, so the outcome is unknown until you retry.",
+  },
 };
 
 /** Demo-only fixtures. Everything is created through the real domain services, never faked in the UI. */
 export class DemoService {
-  constructor(private readonly db: Db, private readonly storage: BlobStorage, private readonly incidents: IncidentService, private readonly repair: RepairService, private readonly exec: ExecutionService, private readonly provider: SimulatedRepairProvider) {}
+  constructor(
+    private readonly db: Db,
+    private readonly storage: BlobStorage,
+    private readonly incidents: IncidentService,
+    private readonly repair: RepairService,
+    private readonly exec: ExecutionService,
+    private readonly provider: SimulatedRepairProvider,
+  ) {}
 
   private async wipe(p: Principal, withDocs: boolean) {
-    await this.db.$executeRawUnsafe(`TRUNCATE "ConversationMessage","ConversationSession","IncidentEvent","SafetyAssessment","EvidenceReference","RepairRequest","Approval","Incident","ToolExecution","OutboxEvent","ProviderRequest" RESTART IDENTITY CASCADE`);
+    await this.db.$executeRawUnsafe(
+      `TRUNCATE "ConversationMessage","ConversationSession","IncidentEvent","SafetyAssessment","EvidenceReference","RepairRequest","Approval","Incident","ToolExecution","OutboxEvent","ProviderRequest" RESTART IDENTITY CASCADE`,
+    );
     if (withDocs) await this.db.$executeRawUnsafe(`TRUNCATE "DocumentChunk","ApplianceDocument" RESTART IDENTITY CASCADE`);
     // user-added appliances go too (their documents/cases were just removed, so the FK restriction is satisfied)
     if (withDocs) await this.db.appliance.deleteMany({ where: { householdId: p.householdId, id: { not: SEED_IDS.appliance } } });
@@ -32,13 +62,32 @@ export class DemoService {
     await seed(this.db);
     return p;
   }
-  async reset(p: Principal, applianceId: string) { await this.wipe(p, true); await seedDocuments(this.db, this.storage, p, applianceId); return { reset: true }; }
+  async reset(p: Principal, applianceId: string) {
+    await this.wipe(p, true);
+    await seedDocuments(this.db, this.storage, p, applianceId);
+    return { reset: true };
+  }
 
   private async approvedDraft(p: Principal, agent: Principal, applianceId: string) {
-    const inc = (await this.incidents.create(agent, { applianceId, description: "My dishwasher is leaking from the door", idempotencyKey: `demo-${Date.now()}` })).incident;
-    await this.incidents.assessSafety(agent, inc.id, { nearElectricalOutlet: false, smokeOrBurningSmell: false, gasSmell: false, waterSpreadingQuickly: false });
+    const inc = (
+      await this.incidents.create(agent, {
+        applianceId,
+        description: "My dishwasher is leaking from the door",
+        idempotencyKey: `demo-${Date.now()}`,
+      })
+    ).incident;
+    await this.incidents.assessSafety(agent, inc.id, {
+      nearElectricalOutlet: false,
+      smokeOrBurningSmell: false,
+      gasSmell: false,
+      waterSpreadingQuickly: false,
+    });
     const { draft } = await this.repair.draft(agent, { incidentId: inc.id, recipientType: "REPAIR_TECHNICIAN" });
-    const { approval } = await this.repair.requestApproval(agent, { incidentId: inc.id, actionType: "SUBMIT_REPAIR_REQUEST", draftId: draft.id });
+    const { approval } = await this.repair.requestApproval(agent, {
+      incidentId: inc.id,
+      actionType: "SUBMIT_REPAIR_REQUEST",
+      draftId: draft.id,
+    });
     await this.repair.decide(p, approval.id, "APPROVED");
     return { incidentId: inc.id, approvalId: approval.id };
   }

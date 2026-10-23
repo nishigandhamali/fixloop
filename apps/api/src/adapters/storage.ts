@@ -20,5 +20,7 @@ export class LocalFsStorage implements BlobStorage {
     await writeFile(path, bytes, { flag: "w" });
     return `${key.slice(0, 2)}/${key}`;
   }
-  get(key: string) { return readFile(this.pathFor(key)); }
+  get(key: string) {
+    return readFile(this.pathFor(key));
+  }
 }

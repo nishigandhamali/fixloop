@@ -1,10 +1,27 @@
 import { describe, expect, it } from "vitest";
-import { applyConflicts, bestSnippet, chunkPage, classifyHit, coverage, extractDeclaredBrand, extractDeclaredModels, extractExpiry, extractTerms, looksLikeInjection, matchAppliance, overallStatus, snippetsConflict, stem } from "../src/index.js";
+import {
+  applyConflicts,
+  bestSnippet,
+  chunkPage,
+  classifyHit,
+  coverage,
+  extractDeclaredBrand,
+  extractDeclaredModels,
+  extractExpiry,
+  extractTerms,
+  negatedTerms,
+  looksLikeInjection,
+  matchAppliance,
+  overallStatus,
+  snippetsConflict,
+  stem,
+} from "../src/index.js";
 
 describe("chunking", () => {
   it("is deterministic and bounded", () => {
     const page = Array.from({ length: 40 }, (_, i) => `Sentence number ${i} about the door gasket.`).join(" ");
-    const a = chunkPage(page), b = chunkPage(page);
+    const a = chunkPage(page),
+      b = chunkPage(page);
     expect(a).toEqual(b);
     expect(a.length).toBeGreaterThan(1);
     expect(a.every((c) => c.length <= 600)).toBe(true);
@@ -61,7 +78,8 @@ describe("injection", () => {
 describe("classification", () => {
   const base = { snippet: "x", injectionDetected: false };
   it("wrong model can never be VERIFIED", () => expect(classifyHit({ ...base, coverage: 1, modelMatch: false }).status).toBe("UNVERIFIED"));
-  it("unknown model caps at PARTIALLY_SUPPORTED", () => expect(classifyHit({ ...base, coverage: 1, modelMatch: null }).status).toBe("PARTIALLY_SUPPORTED"));
+  it("unknown model caps at PARTIALLY_SUPPORTED", () =>
+    expect(classifyHit({ ...base, coverage: 1, modelMatch: null }).status).toBe("PARTIALLY_SUPPORTED"));
   it("matching model + full coverage is VERIFIED; half is PARTIAL", () => {
     expect(classifyHit({ ...base, coverage: 1, modelMatch: true }).status).toBe("VERIFIED");
     expect(classifyHit({ ...base, coverage: 0.5, modelMatch: true }).status).toBe("PARTIALLY_SUPPORTED");
@@ -80,5 +98,17 @@ describe("classification", () => {
       { status: "UNVERIFIED" as const, snippet: "Replace every 6 months.", modelMatch: false, uncertainties: [] },
     ]);
     expect(hits.map((h) => h.status)).toEqual(["CONFLICTING", "CONFLICTING", "UNVERIFIED"]);
+  });
+});
+
+describe("negation", () => {
+  it("flags terms that follow a negator and ignores plain statements", () => {
+    expect(negatedTerms(["leak"], "The door gasket does not leak under normal use.")).toEqual(["leak"]);
+    expect(negatedTerms(["leak"], "A worn gasket will leak water.")).toEqual([]);
+  });
+  it("caps VERIFIED at PARTIALLY_SUPPORTED when the snippet negates a term", () => {
+    const base = { snippet: "x", coverage: 1, modelMatch: true as boolean | null, injectionDetected: false };
+    expect(classifyHit(base).status).toBe("VERIFIED");
+    expect(classifyHit({ ...base, negatedTerms: ["leak"] }).status).toBe("PARTIALLY_SUPPORTED");
   });
 });
