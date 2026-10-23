@@ -5,3 +5,6 @@ dist
 .pgdata
 storage
 *.log
+.e2e-storage
+test-results
+playwright-report
