@@ -50,6 +50,7 @@ export function TurnCards({
                 approvalId={c.approvalId}
                 subject={c.subject}
                 body={c.body}
+                recipientAddress={c.recipientAddress}
                 expiresAt={c.expiresAt}
                 status={c.status}
                 onDecided={onDecided}
@@ -71,7 +72,8 @@ export function TurnCards({
                     {c.repair.reference && (
                       <>
                         {" "}
-                        reference <code>{c.repair.reference}</code> (simulated; completion not verified)
+                        reference <code>{c.repair.reference}</code> (
+                        {c.repair.recipientAddress ? `emailed to ${c.repair.recipientAddress}` : "simulated"}; completion not verified)
                       </>
                     )}
                   </p>

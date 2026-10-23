@@ -1,7 +1,7 @@
 import { actionPayloadHash, backoffDelayMs } from "@fixloop/domain";
 import { Prisma, type ExecStatus } from "@prisma/client";
 import { createHash } from "node:crypto";
-import { ProviderError, type ProviderReceipt, type RepairProvider } from "../../adapters/provider.js";
+import { ProviderError, type ProviderName, type ProviderReceipt, type RepairProvider } from "../../adapters/provider.js";
 import type { Db } from "../../db.js";
 import { AppError, forbidden, notFound } from "../../errors.js";
 import type { Principal } from "../../principal.js";
@@ -25,9 +25,15 @@ export interface ExecutionResult {
   reconciled: boolean;
   attempts: number;
   externalCompletionVerified: false;
-  provider: "SIMULATED_PROVIDER";
+  provider: ProviderName;
+  recipientAddress: string | null;
   message: string;
 }
+
+const successMessage = (provider: ProviderName, recipientAddress: string | null) =>
+  provider === "EMAIL"
+    ? `Emailed to ${recipientAddress}. The email service accepted it, but the recipient has not confirmed and external completion is not verified.`
+    : "Submitted to the simulated provider. A real technician has NOT been contacted and external completion is not verified.";
 
 const sleep = (ms: number) => (ms > 0 ? new Promise((r) => setTimeout(r, ms)) : Promise.resolve());
 const RECLAIMABLE: ExecStatus[] = ["PENDING", "FAILED_RETRYABLE", "UNKNOWN_OUTCOME"];
@@ -149,7 +155,7 @@ export class ExecutionService {
     execId: string,
     _requestHash: string,
     approvalId: string,
-    draft: Parameters<typeof payloadOf>[0] & { idempotencyKey: string; subject: string; body: string; id: string },
+    draft: Parameters<typeof payloadOf>[0] & { idempotencyKey: string },
     reconcileFirst: boolean,
   ): Promise<ExecutionResult> {
     let attempts = 0,
@@ -180,7 +186,12 @@ export class ExecutionService {
     else if (!receipt) {
       for (attempts = 1; attempts <= this.retry.maxAttempts; attempts++) {
         try {
-          const r = await this.provider.submit({ idempotencyKey: draft.idempotencyKey, subject: draft.subject, body: draft.body });
+          const r = await this.provider.submit({
+            idempotencyKey: draft.idempotencyKey,
+            recipientAddress: draft.recipientAddress,
+            subject: draft.subject,
+            body: draft.body,
+          });
           receipt = r;
           break;
         } catch (e) {
@@ -213,7 +224,8 @@ export class ExecutionService {
       reconciled,
       attempts,
       externalCompletionVerified: false as const,
-      provider: "SIMULATED_PROVIDER" as const,
+      provider: this.provider.name,
+      recipientAddress: draft.recipientAddress,
     };
     if (outcome === "SUCCEEDED" && receipt) {
       const ref = (receipt as ProviderReceipt).reference;
@@ -221,12 +233,12 @@ export class ExecutionService {
         ...base,
         status: "SUCCEEDED",
         providerReference: ref,
-        message: "Submitted to the simulated provider. A real technician has NOT been contacted and external completion is not verified.",
+        message: successMessage(this.provider.name, draft.recipientAddress),
       };
       await this.db.$transaction(async (tx) => {
         await tx.repairRequest.updateMany({
           where: { id: draft.id, status: { not: "SENT" } },
-          data: { status: "SENT", externalReference: ref, sentAt: this.now() },
+          data: { status: "SENT", externalProvider: this.provider.name, externalReference: ref, sentAt: this.now() },
         });
         await tx.approval.updateMany({
           where: { id: approvalId, status: "APPROVED" },
@@ -243,7 +255,8 @@ export class ExecutionService {
             {
               repairRequestId: draft.id,
               providerReference: ref,
-              provider: "SIMULATED_PROVIDER",
+              provider: this.provider.name,
+              recipientAddress: draft.recipientAddress,
               reconciled,
               externalCompletionVerified: false,
             },
@@ -269,7 +282,7 @@ export class ExecutionService {
       FAILED_PERMANENT: "The provider rejected the request. Nothing was sent.",
       UNKNOWN_OUTCOME:
         "The request may or may not have reached the provider and its status could not be confirmed. Nothing will be resent until this is reconciled.",
-      FAILED_RETRYABLE: "The request was not sent after several attempts. It is safe to try again.",
+      FAILED_RETRYABLE: "The request could not be confirmed after several attempts. It is safe to try again: a retry cannot send it twice.",
     }[outcome as "FAILED_PERMANENT" | "UNKNOWN_OUTCOME" | "FAILED_RETRYABLE"];
     const result: ExecutionResult = { ...base, status: outcome, providerReference: null, message };
     const incidentId = (await this.db.repairRequest.findUniqueOrThrow({ where: { id: draft.id } })).incidentId;

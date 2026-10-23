@@ -16,14 +16,22 @@ export type Card =
       overallStatus: string;
       items: { claim: string; status: string; filename: string; page: number; modelMatch: boolean | null; uncertainties: string[] }[];
     }
-  | { type: "approval"; approvalId: string; status: string; subject: string; body: string; expiresAt: string | null }
+  | {
+      type: "approval";
+      approvalId: string;
+      status: string;
+      subject: string;
+      body: string;
+      recipientAddress: string | null;
+      expiresAt: string | null;
+    }
   | {
       type: "status";
       incidentId: string;
       title: string;
       workflowStatus: string;
       severity: string;
-      repair: { status: string; reference: string | null } | null;
+      repair: { status: string; reference: string | null; recipientAddress: string | null } | null;
       lastEvents: { eventType: string; timestamp: string }[];
     }
   | { type: "execution"; status: string; providerReference: string | null; message: string; externalCompletionVerified: false }
@@ -294,6 +302,7 @@ export class Coordinator {
       status: "PENDING",
       subject: d.data.subject,
       body: d.data.body,
+      recipientAddress: d.data.recipientAddress,
       expiresAt: ap.data.expiresAt,
     });
     const verified = ev.ok && ev.data.overallStatus === "VERIFIED";
@@ -348,7 +357,7 @@ export class Coordinator {
       title: d.incident.title,
       workflowStatus: d.incident.workflowStatus,
       severity: d.incident.severity,
-      repair: rr ? { status: rr.status, reference: rr.externalReference } : null,
+      repair: rr ? { status: rr.status, reference: rr.externalReference, recipientAddress: rr.recipientAddress } : null,
       lastEvents: (d.recentEvents as any[]).slice(-5).map((e) => ({ eventType: e.eventType, timestamp: e.timestamp })),
     };
   }
@@ -390,7 +399,9 @@ export class Coordinator {
             APPROVED: unknown
               ? 'You approved it, but the last submission attempt has an unconfirmed outcome. Say "send it" and I\'ll check before doing anything.'
               : 'You approved it, but it hasn\'t been submitted yet. Say "send it".',
-            SENT: `The request was submitted to the simulated provider (reference ${rr.externalReference}). External completion is not verified.`,
+            SENT: rr.recipientAddress
+              ? `The request was emailed to ${rr.recipientAddress} (reference ${rr.externalReference}). They haven't confirmed, so completion is not verified.`
+              : `The request was submitted to the simulated provider (reference ${rr.externalReference}). External completion is not verified.`,
             FAILED: "The provider rejected the request.",
             CANCELED: "The last draft was canceled.",
           } as Record<string, string>
@@ -405,6 +416,7 @@ export class Coordinator {
         status: pending.status,
         subject: rr.subject,
         body: rr.body,
+        recipientAddress: rr.recipientAddress,
         expiresAt: pending.expiresAt,
       });
     return out(
@@ -449,6 +461,7 @@ export class Coordinator {
               status: "PENDING",
               subject: rr.subject,
               body: rr.body,
+              recipientAddress: rr.recipientAddress,
               expiresAt: pending.expiresAt,
             },
           ],
@@ -480,10 +493,12 @@ export class Coordinator {
       });
     const spoken =
       {
-        SUCCEEDED: `Done. The request was submitted to the simulated provider, reference ${e.data.providerReference}. No real technician was contacted, and I can't confirm completion.`,
+        SUCCEEDED: e.data.recipientAddress
+          ? `Done. I emailed the request to ${e.data.recipientAddress}, reference ${e.data.providerReference}. They haven't confirmed, and I can't confirm completion.`
+          : `Done. The request was submitted to the simulated provider, reference ${e.data.providerReference}. No real technician was contacted, and I can't confirm completion.`,
         UNKNOWN_OUTCOME:
           "I couldn't confirm whether the request went through. I won't resend blindly; say \"send it\" again and I'll check first.",
-        FAILED_RETRYABLE: "It wasn't sent after several tries. It's safe to try again.",
+        FAILED_RETRYABLE: "I couldn't confirm it after several tries. It's safe to try again; a retry can't send it twice.",
         FAILED_PERMANENT: "The provider rejected the request. Nothing was sent.",
       }[e.data.status as string] ?? e.data.message;
     return out(
@@ -562,6 +577,7 @@ export class Coordinator {
               status: "PENDING",
               subject: rr.subject,
               body: rr.body,
+              recipientAddress: rr.recipientAddress,
               expiresAt: pending.expiresAt,
             },
           ],

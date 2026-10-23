@@ -29,6 +29,8 @@ export class RepairService {
     private readonly incidents: IncidentService,
     private readonly evidence: EvidenceService,
     private readonly now: () => Date = () => new Date(),
+    /** Delivery addresses by recipient type; null means requests go to the simulated provider and carry no address. */
+    private readonly recipients: Partial<Record<RecipientType, string>> | null = null,
   ) {}
 
   private requireWriter(p: Principal) {
@@ -57,6 +59,10 @@ export class RepairService {
         `Cannot draft a repair request while the incident is ${inc.workflowStatus}`,
         409,
       );
+    const recipientAddress = this.recipients ? this.recipients[input.recipientType] : undefined;
+    if (this.recipients && !recipientAddress)
+      throw new AppError("RECIPIENT_NOT_CONFIGURED", `No email address is configured for ${input.recipientType}`, 409);
+    const owner = recipientAddress ? await this.db.user.findUniqueOrThrow({ where: { id: p.userId } }) : null;
     const sent = await this.db.repairRequest.findFirst({ where: { incidentId: inc.id, status: "SENT" } });
     if (sent) throw new AppError("REPAIR_ALREADY_SUBMITTED", "A repair request was already submitted for this incident", 409);
 
@@ -65,7 +71,9 @@ export class RepairService {
     const facts = ev.evidence.filter((e) => e.verificationStatus === "VERIFIED").slice(0, 3);
     const a = inc.appliance;
     const body = [
-      "Service request drafted by FixLoop (concept simulation: no real technician is contacted).",
+      owner
+        ? "Service request sent on behalf of the household owner by FixLoop, an informational assistant."
+        : "Service request drafted by FixLoop (concept simulation: no real technician is contacted).",
       "",
       a
         ? `Appliance: ${a.brand} ${a.modelNumber} (${a.category.toLowerCase()})${a.location ? `, ${a.location}` : ""}`
@@ -79,10 +87,12 @@ export class RepairService {
         : "No manufacturer documentation could be verified for this model.",
       ...facts.map((f) => `- "${f.claim}" (${f.sources[0]!.filename}, page ${f.sources[0]!.pageNumber})`),
       "",
-      "Requested: inspection and a repair estimate. Please contact the owner to schedule.",
+      owner
+        ? `Requested: inspection and a repair estimate. Please contact the owner, ${owner.displayName}, at ${owner.email} to schedule.`
+        : "Requested: inspection and a repair estimate. Please contact the owner to schedule.",
     ].join("\n");
     const subject = `Repair request: ${a ? `${a.brand} ${a.modelNumber} ` : ""}${inc.title}`.slice(0, 200);
-    const idempotencyKey = `draft:${inc.id}:${input.recipientType}:${sha(subject + "\n" + body).slice(0, 24)}`;
+    const idempotencyKey = `draft:${inc.id}:${input.recipientType}:${sha(`${recipientAddress ?? ""}\n${subject}\n${body}`).slice(0, 24)}`;
 
     return this.db.$transaction(async (tx) => {
       const existing = await tx.repairRequest.findUnique({ where: { idempotencyKey } });
@@ -90,7 +100,15 @@ export class RepairService {
       const draft = existing
         ? await tx.repairRequest.update({ where: { id: existing.id }, data: { status: "DRAFT" } })
         : await tx.repairRequest.create({
-            data: { incidentId: inc.id, recipientType: input.recipientType, subject, body, status: "DRAFT", idempotencyKey },
+            data: {
+              incidentId: inc.id,
+              recipientType: input.recipientType,
+              recipientAddress: recipientAddress ?? null,
+              subject,
+              body,
+              status: "DRAFT",
+              idempotencyKey,
+            },
           });
       await this.incidents.event(
         tx,

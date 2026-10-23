@@ -103,14 +103,31 @@ export default async function IncidentPage({ params }: { params: Promise<{ id: s
                 )}
                 {submitted && (
                   <p>
-                    Submitted successfully to the <strong>simulated</strong> provider. <strong>External completion is not verified</strong>{" "}
-                    and no real technician was contacted.
+                    {rr.recipientAddress ? (
+                      <>
+                        Emailed to <strong>{rr.recipientAddress}</strong>. <strong>External completion is not verified</strong>: they have
+                        not confirmed.
+                      </>
+                    ) : (
+                      <>
+                        Submitted successfully to the <strong>simulated</strong> provider.{" "}
+                        <strong>External completion is not verified</strong> and no real technician was contacted.
+                      </>
+                    )}
                   </p>
                 )}
               </div>
             )}
           </Card>
-          {pending && rr && <ApprovalCard approvalId={pending.id} subject={rr.subject} body={rr.body} expiresAt={pending.expiresAt} />}
+          {pending && rr && (
+            <ApprovalCard
+              approvalId={pending.id}
+              subject={rr.subject}
+              body={rr.body}
+              recipientAddress={rr.recipientAddress}
+              expiresAt={pending.expiresAt}
+            />
+          )}
           {!emergency && <EvidenceViewer incidentId={i.id} defaultQuestion={d.appliance ? `${i.description}` : i.description} />}
         </div>
         <div className="space-y-6">

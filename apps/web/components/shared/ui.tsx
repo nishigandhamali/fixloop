@@ -74,8 +74,9 @@ export const btnDanger = `${btn} bg-danger text-accent-ink hover:brightness-110`
 export function Disclosure() {
   return (
     <p className="text-xs text-muted">
-      FixLoop is an informational assistant, not an emergency or professional repair service. Requests go to a <strong>simulated</strong>{" "}
-      provider; no real technician is contacted.
+      FixLoop is an informational assistant, not an emergency or professional repair service. Nothing is sent until you approve it, and the
+      approval shows exactly who receives it. Without a configured recipient, requests go to a <strong>simulated</strong> provider and no
+      real technician is contacted.
     </p>
   );
 }

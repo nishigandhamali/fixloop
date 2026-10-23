@@ -281,8 +281,8 @@ describe("idempotency", () => {
   });
 
   it("the provider itself de-duplicates by idempotency key", async () => {
-    const r1 = await ctx.provider.submit({ idempotencyKey: "k1", subject: "s", body: "b" });
-    const r2 = await ctx.provider.submit({ idempotencyKey: "k1", subject: "s", body: "b" });
+    const r1 = await ctx.provider.submit({ idempotencyKey: "k1", recipientAddress: null, subject: "s", body: "b" });
+    const r2 = await ctx.provider.submit({ idempotencyKey: "k1", recipientAddress: null, subject: "s", body: "b" });
     expect(r2.duplicate).toBe(true);
     expect(r2.reference).toBe(r1.reference);
     expect(await providerCount()).toBe(1);

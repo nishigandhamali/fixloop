@@ -1,6 +1,6 @@
 # Implementation status (verified by running commands)
 
-Last verified 2026-10-23: `pnpm format:check`, `pnpm lint`, `pnpm typecheck`, `pnpm build` clean; `pnpm test` = 29 domain + 65 API = **94 passing, 0 failing**; `pnpm e2e` = **15 passing** (desktop + mobile, incl. axe accessibility). Requires the embedded Postgres (`pnpm db:start`).
+Last verified 2026-10-23: `pnpm format:check`, `pnpm lint`, `pnpm typecheck`, `pnpm build` clean; `pnpm test` = 29 domain + 76 API = **105 passing, 0 failing**; `pnpm e2e` = **15 passing** (desktop + mobile, incl. axe accessibility). Requires the embedded Postgres (`pnpm db:start`).
 
 ## Milestones
 
@@ -38,6 +38,14 @@ Last verified 2026-10-23: `pnpm format:check`, `pnpm lint`, `pnpm typecheck`, `p
 - `apps/api/tests/documents.integration.test.ts` (17): real MCP client + real Postgres - gate scenario, page-citation accuracy (every citation resolves to a DB chunk containing the snippet), wrong-model, mixed-model, expired warranty, missing coverage, irrelevant question, conflicting sources, no-appliance, injection + zero-mutation, cross-household (MCP + REST), malformed/mismatched/binary/empty/unsupported uploads, dedupe, 413, restart durability.
 - `apps/api/tests/repair.integration.test.ts` (18): golden path with ordered timeline, drafting rules, tamper (approve + execute), expiry, rejection, cross-household, 6-way concurrent execution, consumed approval, key reuse, retry/backoff, exhausted retries then success, timeout-after-send reconciliation, unknown outcome resumed from a new MCP session, never-landed resubmission, stale-lease crash recovery, permanent rejection, fault endpoint auth.
 - A bug found and fixed by these tests: a new idempotency key against an already-consumed approval skipped validation when the draft was SENT (no duplicate was sent, but it should have been refused with `APPROVAL_ALREADY_CONSUMED`).
+
+## Real email delivery (added 2026-10-23)
+
+- `DELIVERY=email` (+ `EMAIL_API_KEY`, `EMAIL_FROM`, `TECHNICIAN_EMAIL`) swaps `SimulatedRepairProvider` for `EmailRepairProvider` (Resend HTTP API, no extra dependency). Default remains `simulated`.
+- The recipient address is set at draft time, shown on the approval card and included in the approval hash (changing it after approval => `PAYLOAD_CHANGED`). The draft includes the owner's name and email so the recipient can reply to them.
+- Exactly-once: the repair request's idempotency key is sent as the email service's `Idempotency-Key`. The service cannot be queried by key, so `lookup()` returns null and the reconciliation of an ambiguous attempt is the idempotent retry. Resend keeps keys for 24 hours, so an `UNKNOWN_OUTCOME` resumed after more than 24 hours could in principle email twice.
+- Tested with a fake of the email service (`apps/api/tests/email-delivery.integration.test.ts`): one email on success, accepted-then-timeout, outages, permanent rejection, tampered recipient, unconfigured recipient type, demo features disabled. **No real email has been sent by the automated tests; a live send needs your Resend key.**
+- Demo scenarios that submit a request or inject provider faults return `SIMULATION_ONLY` in email mode so they can never send real mail.
 
 ## Known limitations / honest gaps
 

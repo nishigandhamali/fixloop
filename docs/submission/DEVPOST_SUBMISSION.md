@@ -10,9 +10,9 @@ The core is a self-hosted MCP server (spec 2025-11-25, Streamable HTTP, 10 tools
 
 Trust features: evidence is VERIFIED only when the document's model matches the registered appliance and the quoted snippet covers the question; wrong-model manuals never show as verified; instruction-like text inside documents is detected and never quoted or obeyed; approvals are bound to a hash of the exact draft; simple negation in sources ("does NOT leak") is detected.
 
-Built during the window: all of it (first commit 2026-10-18). 94 unit/integration tests and 15 Playwright E2E tests (including axe accessibility and mobile) pass.
+Built during the window: all of it (first commit 2026-10-18). 105 unit/integration tests and 15 Playwright E2E tests (including axe accessibility and mobile) pass.
 
-Honest limits: the repair provider is simulated, auth is demo-only, and evidence verification is lexical.
+Delivery: by default approved requests go to a simulated provider; with `DELIVERY=email` the approved text is emailed to the technician (recipient shown on the approval card and bound to the approval, sent once). Honest limits: auth is demo-only and evidence verification is lexical.
 
 ## Product feedback (MCP / Alexa+ track)
 

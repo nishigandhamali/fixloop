@@ -6,7 +6,8 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildApp } from "../src/app.js";
-import { SimulatedRepairProvider } from "../src/adapters/provider.js";
+import { SimulatedRepairProvider, type RepairProvider } from "../src/adapters/provider.js";
+import type { RecipientType } from "../src/modules/repair/repair-service.js";
 import { LocalFsStorage } from "../src/adapters/storage.js";
 import { issueToken } from "../src/auth.js";
 import { seed, SEED_IDS } from "../../../prisma/seed.js";
@@ -20,6 +21,8 @@ export interface StartOptions {
   storageDir?: string;
   maxUploadBytes?: number;
   rateLimitPerMinute?: number;
+  /** Real-delivery setup (replaces the simulated provider inside the app). */
+  delivery?: { provider: RepairProvider; recipients: Partial<Record<RecipientType, string>> };
 }
 
 export async function startApp(opts: StartOptions = {}) {
@@ -34,7 +37,8 @@ export async function startApp(opts: StartOptions = {}) {
   const storage = new LocalFsStorage(storageDir);
   const provider = new SimulatedRepairProvider(db);
   const app: FastifyInstance = buildApp(db, {
-    provider,
+    provider: opts.delivery?.provider ?? provider,
+    recipients: opts.delivery?.recipients,
     rateLimitPerMinute: opts.rateLimitPerMinute ?? 100000,
     retry: { maxAttempts: 3, baseMs: 1, capMs: 2, leaseMs: 30_000 },
     sessionSecret: SECRET,

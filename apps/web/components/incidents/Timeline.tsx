@@ -6,7 +6,7 @@ const ACTOR: Record<string, string> = {
   AGENT: "Assistant",
   SYSTEM: "System",
   TOOL: "Assistant tool",
-  EXTERNAL: "Simulated provider",
+  EXTERNAL: "Delivery",
 };
 const TONE: Record<string, string> = {
   USER: "border-accent",

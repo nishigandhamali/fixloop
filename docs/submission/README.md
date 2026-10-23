@@ -10,6 +10,6 @@
 - Exactly-once downstream request under retries, timeouts and concurrent execution.
 - Accessible UI (axe), mobile layout, microphone-unavailable fallback.
 
-**Verify:** `pnpm db:start &` then `pnpm verify && pnpm e2e` (94 unit/integration + 15 E2E tests). Screenshots: `docs/submission/screenshots/`.
+**Verify:** `pnpm db:start &` then `pnpm verify && pnpm e2e` (105 unit/integration + 15 E2E tests). Screenshots: `docs/submission/screenshots/`.
 
-**Honest limits:** see `docs/IMPLEMENTATION_STATUS.md` (demo auth only, simulated repair provider, lexical evidence verification, no outbox).
+**Honest limits:** see `docs/IMPLEMENTATION_STATUS.md` (demo auth only, lexical evidence verification, no outbox; delivery is simulated by default, with optional real email via `DELIVERY=email`).

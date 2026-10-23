@@ -33,6 +33,7 @@ export interface RepairRequest {
   subject: string;
   body: string;
   recipientType: string;
+  recipientAddress: string | null;
   externalReference: string | null;
   sentAt: string | null;
 }
@@ -73,14 +74,22 @@ export type Card =
       overallStatus: string;
       items: { claim: string; status: string; filename: string; page: number; modelMatch: boolean | null; uncertainties: string[] }[];
     }
-  | { type: "approval"; approvalId: string; status: string; subject: string; body: string; expiresAt: string | null }
+  | {
+      type: "approval";
+      approvalId: string;
+      status: string;
+      subject: string;
+      body: string;
+      recipientAddress: string | null;
+      expiresAt: string | null;
+    }
   | {
       type: "status";
       incidentId: string;
       title: string;
       workflowStatus: string;
       severity: string;
-      repair: { status: string; reference: string | null } | null;
+      repair: { status: string; reference: string | null; recipientAddress: string | null } | null;
       lastEvents: { eventType: string; timestamp: string }[];
     }
   | { type: "execution"; status: string; providerReference: string | null; message: string; externalCompletionVerified: false }

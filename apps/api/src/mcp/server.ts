@@ -244,7 +244,15 @@ export function buildMcpServer(services: McpServices, p: Principal): McpServer {
     guard("draft_repair_request", async ({ incidentId, recipientType, messageContext }) => {
       const { draft, replayed } = await services.repair.draft(p, { incidentId, recipientType, messageContext });
       return ok(
-        { draftId: draft.id, subject: draft.subject, body: draft.body, status: draft.status, replayed, sent: false },
+        {
+          draftId: draft.id,
+          subject: draft.subject,
+          body: draft.body,
+          recipientAddress: draft.recipientAddress,
+          status: draft.status,
+          replayed,
+          sent: false,
+        },
         "Draft prepared. Nothing has been sent.",
       );
     }),
@@ -264,7 +272,7 @@ export function buildMcpServer(services: McpServices, p: Principal): McpServer {
       return ok(
         {
           approvalId: approval.id,
-          actionSummary: "Submit the drafted repair request to the (simulated) provider",
+          actionSummary: "Send the drafted repair request to its recipient",
           payloadHash: approval.actionPayloadHash,
           expiresAt: approval.expiresAt.toISOString(),
           status: approval.status,
@@ -280,7 +288,7 @@ export function buildMcpServer(services: McpServices, p: Principal): McpServer {
     {
       title: "Execute approved action",
       description:
-        "Submit an action the user has already approved. Fails unless the approval is APPROVED, unexpired, unconsumed, and the draft is unchanged. Side-effecting; reuse the same idempotencyKey to retry safely. Returns a durable status (SUCCEEDED, FAILED_RETRYABLE, FAILED_PERMANENT, UNKNOWN_OUTCOME); report it faithfully and never claim success otherwise. Submission goes to a SIMULATED provider: no real technician is contacted.",
+        "Submit an action the user has already approved. Fails unless the approval is APPROVED, unexpired, unconsumed, and the draft is unchanged. Side-effecting; reuse the same idempotencyKey to retry safely. Returns a durable status (SUCCEEDED, FAILED_RETRYABLE, FAILED_PERMANENT, UNKNOWN_OUTCOME); report it faithfully and never claim success otherwise. The request goes to the recipient shown on the draft; when the draft has no recipient address it goes to a SIMULATED provider and no real technician is contacted.",
       inputSchema: { incidentId: z.string().uuid(), approvalId: z.string().uuid(), idempotencyKey: idem },
       annotations: { ...write, openWorldHint: true },
     },

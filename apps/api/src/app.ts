@@ -11,13 +11,13 @@ import { buildMcpServer } from "./mcp/server.js";
 import { DocumentService } from "./modules/documents/document-service.js";
 import { EvidenceService } from "./modules/documents/evidence-service.js";
 import type { BlobStorage } from "./adapters/storage.js";
-import { SimulatedRepairProvider, type Fault } from "./adapters/provider.js";
+import { SimulatedRepairProvider, type Fault, type RepairProvider } from "./adapters/provider.js";
 import { Metrics } from "./observability.js";
 import { ConversationService } from "./modules/agent/conversation-service.js";
 import { McpToolGateway, type ToolGateway } from "./modules/agent/tools.js";
 import { FixtureLlmProvider, ResilientLlm, type LlmProvider } from "./modules/agent/llm.js";
 import { DemoService, SCENARIOS } from "./modules/demo/demo-service.js";
-import { RepairService } from "./modules/repair/repair-service.js";
+import { RepairService, type RecipientType } from "./modules/repair/repair-service.js";
 import { ExecutionService, DEFAULT_RETRY, type RetryConfig } from "./modules/repair/execution-service.js";
 
 export interface AppConfig {
@@ -27,7 +27,9 @@ export interface AppConfig {
   storage: BlobStorage;
   maxUploadBytes: number;
   now?: () => Date;
-  provider?: SimulatedRepairProvider;
+  provider?: RepairProvider;
+  /** Delivery addresses per recipient type; required when `provider` sends real messages. */
+  recipients?: Partial<Record<RecipientType, string>>;
   retry?: RetryConfig;
   llm?: LlmProvider;
   gatewayFor?: (p: Principal) => ToolGateway;
@@ -54,7 +56,7 @@ export function buildApp(db: Db, cfg: AppConfig): FastifyInstance {
   const docs = new DocumentService(db, cfg.storage, cfg.maxUploadBytes);
   const evidence = new EvidenceService(db, cfg.now);
   const provider = cfg.provider ?? new SimulatedRepairProvider(db);
-  const repair = new RepairService(db, svc, evidence, cfg.now);
+  const repair = new RepairService(db, svc, evidence, cfg.now, cfg.recipients ?? null);
   const fixtureLlm = new FixtureLlmProvider();
   const llm = cfg.llm ?? new ResilientLlm(fixtureLlm, fixtureLlm);
   // The agent reaches the domain only through the real MCP endpoint of this same server, with a server-minted agent credential.
@@ -285,7 +287,7 @@ export function buildApp(db: Db, cfg: AppConfig): FastifyInstance {
     return { appliance: await db.appliance.update({ where: { id: cur.id }, data: b }) };
   });
 
-  const demo = new DemoService(db, cfg.storage, svc, repair, exec, provider);
+  const demo = new DemoService(db, cfg.storage, svc, repair, exec, provider instanceof SimulatedRepairProvider ? provider : null);
   const demoApplianceId = async (p: Principal) =>
     (await db.appliance.findFirstOrThrow({ where: { householdId: p.householdId }, orderBy: { createdAt: "asc" } })).id;
   app.post("/api/v1/demo/reset", async (req) => {
@@ -319,6 +321,8 @@ export function buildApp(db: Db, cfg: AppConfig): FastifyInstance {
     const b = z
       .object({ faults: z.array(z.enum(["submit:fail_before", "submit:timeout_after", "submit:reject", "lookup:fail"])).max(10) })
       .parse(req.body);
+    if (!(provider instanceof SimulatedRepairProvider))
+      throw new AppError("SIMULATION_ONLY", "Fault injection is only available with the simulated provider", 409);
     provider.script(...(b.faults as Fault[]));
     return { scripted: b.faults };
   });

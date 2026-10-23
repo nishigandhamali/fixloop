@@ -9,6 +9,7 @@ export function ApprovalCard({
   approvalId,
   subject,
   body,
+  recipientAddress,
   expiresAt,
   status: initial = "PENDING",
   onDecided,
@@ -16,6 +17,7 @@ export function ApprovalCard({
   approvalId: string;
   subject: string;
   body: string;
+  recipientAddress: string | null;
   expiresAt: string | null;
   status?: string;
   onDecided?: (s: string) => void;
@@ -50,7 +52,15 @@ export function ApprovalCard({
         {body}
       </pre>
       <p className="mt-2 text-xs text-muted">
-        Recipient: repair technician (<strong>simulated provider</strong>). Approving submits exactly this text once.{" "}
+        {recipientAddress ? (
+          <>
+            Recipient: <strong>{recipientAddress}</strong> (real email). Approving emails exactly this text once.
+          </>
+        ) : (
+          <>
+            Recipient: repair technician (<strong>simulated provider</strong>). Approving submits exactly this text once.
+          </>
+        )}{" "}
         {expiresAt && status === "PENDING" && <>Expires {when(expiresAt)}.</>}
       </p>
       {status === "PENDING" && (

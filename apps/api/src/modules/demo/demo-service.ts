@@ -1,4 +1,5 @@
 import type { Db } from "../../db.js";
+import { AppError } from "../../errors.js";
 import type { BlobStorage } from "../../adapters/storage.js";
 import type { SimulatedRepairProvider } from "../../adapters/provider.js";
 import { FIXTURES, ingestFixture, seedDocuments } from "../../seed-documents.js";
@@ -48,7 +49,8 @@ export class DemoService {
     private readonly incidents: IncidentService,
     private readonly repair: RepairService,
     private readonly exec: ExecutionService,
-    private readonly provider: SimulatedRepairProvider,
+    /** null when real delivery is configured: scenarios that submit or inject faults are then unavailable. */
+    private readonly provider: SimulatedRepairProvider | null,
   ) {}
 
   private async wipe(p: Principal, withDocs: boolean) {
@@ -58,7 +60,7 @@ export class DemoService {
     if (withDocs) await this.db.$executeRawUnsafe(`TRUNCATE "DocumentChunk","ApplianceDocument" RESTART IDENTITY CASCADE`);
     // user-added appliances go too (their documents/cases were just removed, so the FK restriction is satisfied)
     if (withDocs) await this.db.appliance.deleteMany({ where: { householdId: p.householdId, id: { not: SEED_IDS.appliance } } });
-    this.provider.clearFaults();
+    this.provider?.clearFaults();
     await seed(this.db);
     return p;
   }
@@ -93,6 +95,8 @@ export class DemoService {
   }
 
   async launch(p: Principal, scenario: Scenario, applianceId: string) {
+    if (!this.provider && (scenario === "resume_incident" || scenario === "interrupted_submission"))
+      throw new AppError("SIMULATION_ONLY", "This scenario submits a request and needs the simulated provider", 409);
     await this.reset(p, applianceId);
     const agent: Principal = { ...p, scope: "agent" };
     let incidentId: string | null = null;
@@ -107,7 +111,7 @@ export class DemoService {
     }
     if (scenario === "interrupted_submission") {
       const a = await this.approvedDraft(p, agent, applianceId);
-      this.provider.script("submit:timeout_after", "lookup:fail");
+      this.provider?.script("submit:timeout_after", "lookup:fail");
       incidentId = a.incidentId;
     }
     return { scenario, incidentId, ...META[scenario] };
